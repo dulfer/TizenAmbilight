@@ -74,7 +74,7 @@ namespace TizenAmbilight
         public const string AppId = "dev.ritwickverma.TizenAmbilight";
         // Bump this whenever behaviour changes. It sat at "v3" through the HDR decode, the BT.2020->709
         // gamut map and the adaptive tone curve, which made build identification useless in telemetry.
-        public const string Version = "v6";
+        public const string Version = "v7";
 
         // ---- failure handling ----
         const int FailSleepMs = 200;                     // pause after a frame-less iteration
@@ -191,9 +191,13 @@ namespace TizenAmbilight
             // ---- (0) PNG decoder self-check, run on the device ----
             string selfTest = PngSelfTest.Run();
             L("png decoder self-test: " + selfTest);
+            string platformVersion;
+            if (Tizen.System.Information.TryGetValue("http://tizen.org/feature/platform.version", out platformVersion))
+                PpiCapture.PlatformVersion = platformVersion;
+            L("runtime: Tizen=" + PpiCapture.PlatformVersion + " pointer_bits=" + (IntPtr.Size * 8));
 
             // ---- (1) resolve the capture library ----
-            bool usePlane = cfg.CaptureBackend == VideoPlaneCapture.BackendName || cfg.CaptureBackend == PpiCapture.BackendName;
+            bool usePlane = cfg.CaptureBackend == VideoPlaneCapture.BackendName;
             string vErr = null;
             if (usePlane)
             {
@@ -247,24 +251,16 @@ namespace TizenAmbilight
 
             var stats = new Stats();
 
-            // Gate on the SELECTED backend only. This used to test the legacy file backend's library
-            // even when the video plane was selected, so a firmware without libdisplay-capture-api
-            // would idle forever although the default backend was ready.
-            string backendErr = usePlane ? vErr : initErr;
+            // A missing plane/file library must not block live control or an independent sampler.
+            string backendErr = cfg.CaptureBackend == PpiCapture.BackendName ? null : usePlane ? vErr : initErr;
             if (backendErr != null)
             {
-                Post(cfg, BuildReport(cfg, selfTest, backendErr, captureDir, discovery, "no_library", stats));
-                L("cannot run the main loop without the capture library; idling and retrying every 60 s");
-                while (true)
-                {
-                    Thread.Sleep(60000);
-                    string again = usePlane ? VideoPlaneCapture.Init() : CaptureApi.Init();
-                    if (again == null) { L("capture library became available"); MainLoop(cfg, selfTest, captureDir, discovery, stats); return; }
-                }
+                L("selected capture library unavailable; keeping control and telemetry available");
             }
 
             // ---- (3) the one-off startup POST: decoder verdict + directory discovery ----
-            Post(cfg, BuildReport(cfg, selfTest, null, captureDir, discovery, "started", stats));
+            Post(cfg, BuildReport(cfg, selfTest, backendErr, captureDir, discovery,
+                                 backendErr == null ? "started" : "no_library", stats));
 
             // ---- (4) the real loop ----
             MainLoop(cfg, selfTest, captureDir, discovery, stats);
@@ -434,7 +430,9 @@ namespace TizenAmbilight
                                 vr = PlaneAssumedLocked;     // not asked: assume still locked
                             else
                             {
-                                vr = VideoPlaneCapture.Capture();
+                                string planeError = VideoPlaneCapture.Ready ? null : VideoPlaneCapture.Init();
+                                vr = planeError == null ? VideoPlaneCapture.Capture()
+                                     : new VideoPlaneResult { Rc = -1, Error = planeError };
                                 _lastPlaneProbeUtc = DateTime.UtcNow;
                             }
                             if (!_ppiAuto || vr.Rc != -4 || vr.HasFrame) st.LastStatus = vr.Status;
@@ -497,7 +495,7 @@ namespace TizenAmbilight
                                 st.LastStatus = (forcePpi ? "ppi(forced) " : "ppi(auto) ") + "rolling pz=" + PpiCapture.PzRequested +
                                                 " settle=" + PpiCapture.EffectiveSleepMs + "ms" +
                                                 (vr != null ? "; plane: " + vr.Status : "");
-                            st.LastRetPath = "(ppi_ve hardware sampler)";
+                            st.LastRetPath = "(" + PpiCapture.ApiFamily + " hardware sampler)";
                             st.CaptureOk++;
                             st.ConsecutiveFails = 0;
                             st.BackoffStep = 0;

@@ -70,6 +70,8 @@ namespace TizenAmbilight
             {
                 { "app", AppId },
                 { "version", Version },
+                { "platform_version", PpiCapture.PlatformVersion },
+                { "process_pointer_bits", (long)(IntPtr.Size * 8) },
                 { "ts_utc", DateTime.UtcNow.ToString("o") },
                 { "phase", "stats" },
                 { "window_sec", windowSec },

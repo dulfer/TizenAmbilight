@@ -536,6 +536,36 @@ namespace DecoderSelfTest
             }
 
             Console.WriteLine();
+            Console.WriteLine("[13] Samsung RGB-measure API discovery");
+            {
+                string report;
+                var legacy = RgbMeasureApi.Discover(
+                    name => name.StartsWith("cs_ve_", StringComparison.Ordinal) ? new IntPtr(1) : IntPtr.Zero,
+                    "6.5", out report);
+                Check(legacy.Count == 1 && legacy[0].Name == "cs_ve", "Tizen 6.5 legacy family", report);
+                var all = RgbMeasureApi.Discover(name => new IntPtr(1), "6.5", out report);
+                Check(all.Count == 3 && all[0].Name == "cs_ve", "legacy preference with all exports", "");
+                all = RgbMeasureApi.Discover(name => new IntPtr(1), "9.0", out report);
+                Check(all[0].Name == "ppi_ve", "preserve reference TV family", "");
+                var partial = RgbMeasureApi.Discover(
+                    name => name.EndsWith("_get_rgb_measure_pixel", StringComparison.Ordinal) ? IntPtr.Zero : new IntPtr(1),
+                    "", out report);
+                Check(partial.Count == 0, "partial families never mixed", report);
+                var middle = RgbMeasureApi.Discover(
+                    name => name.StartsWith("ve_", StringComparison.Ordinal) ? new IntPtr(1) : IntPtr.Zero,
+                    "7.0", out report);
+                Check(middle.Count == 1 && middle[0].Name == "ve", "Tizen 7 family", report);
+                var missing = RgbMeasureApi.Discover(name => IntPtr.Zero, "unknown", out report);
+                Check(missing.Count == 0 && report.Contains("condition=False"), "missing exports diagnosed", report);
+                all = RgbMeasureApi.Discover(name => new IntPtr(1), "unknown", out report);
+                Check(all.Count == 3 && all[0].Name == "ppi_ve", "unknown version uses export discovery", "");
+                Check(RgbMeasureApi.ValidCondition(2, 16, 16, 3840, 2160), "valid sampler geometry", "");
+                Check(!RgbMeasureApi.ValidCondition(0, 16, 16, 3840, 2160) &&
+                      !RgbMeasureApi.ValidCondition(17, 16, 16, 3840, 2160) &&
+                      !RgbMeasureApi.ValidCondition(2, 3840, 16, 3840, 2160) &&
+                      !RgbMeasureApi.ValidCondition(2, 16, 16, int.MaxValue, 2160),
+                      "invalid sampler conditions rejected before position calls", "");
+            }
             Console.WriteLine("==================================================");
             Console.WriteLine("PASSED " + _pass + "   FAILED " + _fail);
             Console.WriteLine("==================================================");

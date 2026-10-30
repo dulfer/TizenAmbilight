@@ -6,7 +6,20 @@ identifier.
 
 ## [Unreleased]
 
+### Added (build v7)
+- S95B/Tizen 6.5 support through the legacy `cs_ve_*` hardware colour sampler, selected
+  with `captureBackend: "ppi"`. Known RGB, white and black video was verified from native
+  measurements through WLED live pixel output on `QE55S95BATxxx`, using a partner-signed
+  `tizen90` build without retargeting. Full-frame capture, DRM and HDMI remain unverified
+  on this model.
+- Complete-family discovery for `cs_ve_*`, `ve_*` and `ppi_ve_*`, condition validation,
+  sampler-family/export telemetry and host regression tests.
+- Runtime platform version and pointer-size telemetry; native loader errors include `dlerror`.
+
 ### Fixed
+- Forced sampler startup no longer depends on the video-plane library. Missing capture
+  libraries no longer prevent live control and telemetry from starting.
+- Reject the ARM32-only video-plane ABI in a 64-bit process before writing native pointers.
 - Docs: signing needs a **partner**-level certificate. A public certificate installs and starts the app,
   but Tizen blocks the capture libraries (`Operation not permitted`). Reported in #1; the docs
   previously said public was enough.

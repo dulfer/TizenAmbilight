@@ -119,6 +119,14 @@ per-stage timings, capture status and failure counters, power state, the effecti
 (`adaptive`, `tone`), `decode`, `bars`, `mapping`, a zone colour sample, `tv` (model, platform,
 `captureApi=ok|UNAVAILABLE`), and `log_tail`.
 
+On the S95B, use `captureBackend: "ppi"` and inspect `ppi.api_family` (`cs_ve`),
+the condition geometry and native error counters. A successful UDP send is not proof of receipt:
+WLED's `/json/info` should report `live: true`, mode `UDP`, and `lip` equal to the TV's address.
+For end-to-end colour checks, WLED's WebSocket live preview (`{"lv":true}` on `/ws`) exposes
+actual output pixels; the S95B validation compared those against known non-protected red,
+green, blue, white and black video played through Samsung AVPlay. UI-only test patterns are
+not a reliable substitute for native video. Disable the preview with `{"lv":false}` afterwards.
+
 Two rules shaped it: **a telemetry key must describe what it actually holds**, and **anything invisible
 to telemetry may as well not exist**. A fix has to be verifiable, not just asserted.
 

@@ -26,6 +26,8 @@
     <Compile Include="../TizenAmbilight/src/VideoPlaneCapture.cs" />
     <Compile Include="../TizenAmbilight/src/ConfigFile.cs" />
     <Compile Include="../TizenAmbilight/src/PowerState.cs" />
+    <Compile Include="../TizenAmbilight/src/RgbMeasureApi.cs" />
+    <Compile Include="../TizenAmbilight/src/PpiCapture.cs" />
   </ItemGroup>
 
 </Project>

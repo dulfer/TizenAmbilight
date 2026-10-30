@@ -31,6 +31,21 @@ Rules:
 * A malformed file is ignored **as a whole** (not half-applied) and reported as `config_source:
   "error: ..."` in the startup log. Every setting then falls back to its default.
 
+### Older-TV hardware sampler
+
+For the verified S95B/Tizen 6.5 path, set `"captureBackend": "ppi"` in `config.json`.
+No full-frame library is required. The sampler discovers complete `cs_ve`, `ve` and `ppi_ve`
+function families; on Tizen below 7 it prefers `cs_ve`, otherwise it preserves the reference
+TV's `ppi_ve` preference. A family with a failed or implausible condition response is not used.
+The existing default remains `"video_plane"`; sampler selection is explicit, except for the
+existing automatic DRM fallback.
+
+Start with `"ppiZones": 12` and `"ppiSettleMs": -1`. On the S95B each spot refreshes about
+8 times/s between bar probes. Higher `targetFps` renders smoothing more often but does not
+increase measurement freshness. Telemetry's `ppi.api_family`, `ppi.symbols`,
+`ppi.samples_per_s_window` and `ppi.per_zone_refresh_hz` expose the actual backend and rate.
+`platform_version` and `process_pointer_bits` describe the runtime.
+
 ### Getting the LED mapping right
 
 Zones run **clockwise from the screen's top-left corner, as seen from the front**. Two settings place

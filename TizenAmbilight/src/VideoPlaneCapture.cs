@@ -169,6 +169,7 @@ namespace TizenAmbilight
         public static string Init()
         {
             if (_call != null) return null;
+            if (IntPtr.Size != 4) return "video-plane ABI requires a 32-bit process";
 
             try
             {
@@ -180,14 +181,15 @@ namespace TizenAmbilight
                     if (_lib == IntPtr.Zero)
                     {
                         _lib = dlopen("/usr/lib/" + LibName, RTLD_LAZY);
-                        if (_lib == IntPtr.Zero) return "dlopen " + LibName + " failed";
+                        if (_lib == IntPtr.Zero) return "dlopen " + LibName + " failed: " +
+                                                       Marshal.PtrToStringAnsi(dlerror());
                     }
                 }
                 ResolvedPath = LibName;
 
                 IntPtr e1 = dlerror();
                 _fn = dlsym(_lib, Symbol);
-                if (_fn == IntPtr.Zero) return "dlsym " + Symbol + " failed";
+                if (_fn == IntPtr.Zero) return "dlsym " + Symbol + " failed: " + Marshal.PtrToStringAnsi(dlerror());
 
                 _param = Marshal.AllocHGlobal(StructBytes);
                 _bufY = Marshal.AllocHGlobal(YBytes);

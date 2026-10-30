@@ -27,7 +27,8 @@ phone's HDR recording to standard dynamic range, audio removed).*
   colours instead of the whole picture, and far slower. See [DRM content](#drm-content).
 
 > [!WARNING]
-> **Status: early, and tested on one TV.** It was developed on a 2025 Samsung S84F (Tizen 9). It relies
+> **Status: early.** Full-frame capture was developed on a 2025 Samsung S84F (Tizen 9);
+> hardware colour sampling also works on a 2022 S95B (Tizen 6.5). It relies
 > on an undocumented Samsung library that may be missing or different on other models and firmware.
 > If you try it on another TV, please [report what happened](#device-reports), whether it worked or not.
 
@@ -49,14 +50,15 @@ phone's HDR recording to standard dynamic range, audio removed).*
 
 ## Compatibility
 
-**Tested on exactly one TV: a 2025 Samsung S84F (Tizen 9.0).** Everything below that says "works" means
-that TV. Other models are untested, not known to fail.
+**Full-frame capture is verified on the S84F; spot-colour sampling is also verified on the S95B.**
+These are different backends with different spatial and temporal resolution.
 
 | Model year | Tizen | Status |
 |---|---|---|
 | 2025 | 9.0 | ✅ Works on the S84F (OLED, `QN77S84FAEXZA`). Other Tizen 9 models are likely to work but unconfirmed; one Q7F user reports capture is blocked unless the app is signed with a partner certificate ([#1](https://github.com/RitwickVerma/TizenAmbilight/issues/1)). |
 | 2026 | 10.0 | ❔ Untested |
-| 2022–2024 | 6.5–8.0 | ❔ Untested. The app targets `tizen90`; whether Tizen 8 and older can run it, and whether they have the libraries below, is unknown. |
+| 2022 | 6.5 | Works on `QE55S95BATXXN` using `captureBackend: "ppi"` and the legacy `cs_ve_*` hardware sampler (build v7). The `tizen90` build starts without retargeting. Known RGB/white/black video was verified through actual WLED live pixels. Full-frame capture, protected streaming and HDMI are not verified on this TV. |
+| 2023–2024 | 7.0–8.0 | Untested. Sampler discovery supports the `ve_*` family as well; runtime and capture still need device verification. |
 | 2021 | 6.0 | ❌ One report (QN90A, [#2](https://github.com/RitwickVerma/TizenAmbilight/issues/2)): starts only after retargeting to `tizen80`; the video-plane call exists with the documented layout but returns `rc=-95`. Was the build signed partner? Open question. |
 | 2020 and older | ≤ 5.5 | ❌ Unknown, probably not without porting work. Untested. |
 
@@ -65,23 +67,39 @@ What the app needs from the TV:
 | need | used for | if missing |
 |---|---|---|
 | A Tizen .NET runtime that can load a `tizen90` app (the manifest asks for API level 6.5, the project targets `tizen90`) | running at all | the app does not install or start |
-| `libvideo-capture.so` exporting `secvideo_api_capture_video_main` | the video plane (the normal source) | the app idles and retries every 60 s; nothing is sent to the strip |
-| `libvideoenhance.so` exporting `ppi_ve_get_rgb_measure_condition`, `ppi_ve_set_rgb_measure_position`, `ppi_ve_get_rgb_measure_pixel` | the DRM fallback only | the fallback never engages; the app stays on the plane and the strip goes dark under DRM, as before |
+| `libvideo-capture.so` exporting `secvideo_api_capture_video_main` | the video plane (the normal source) | control and telemetry stay available; select the independent sampler with `backend=2` or `captureBackend: "ppi"` |
+| `libvideoenhance.so` exporting a complete RGB-measure family (`cs_ve_*`, `ve_*` or `ppi_ve_*`) | the DRM fallback, or the primary source in `ppi` mode | sampler telemetry explains the load, missing-symbol or invalid-condition failure |
 
 **How to check on your TV** (needs `probeEndpoint` set, see
 [diagnostics](docs/development.md#diagnostics-telemetry-and-frame-dumps)):
 
 * `tv` in any telemetry report ends in `captureApi=ok` or `captureApi=UNAVAILABLE`, and the startup log
   has `video-plane backend ready: ...` or `VIDEO-PLANE backend NOT ready: <why>`. If it is not ready, the
-  app cannot work on that TV.
+  plane backend cannot work yet. In forced `ppi` mode the plane is deliberately not initialized;
+  `captureApi=UNAVAILABLE` does not mean the sampler is unavailable.
 * The DRM fallback is only tried when a streaming app withholds the plane. The log then says either
-  `ppi sampler ready: cond rc=0 slots=N block=WxH settle=Tms ...` or `ppi sampler NOT ready: <why>`. To
+  `ppi sampler ready: api=FAMILY cond rc=0 slots=N block=WxH settle=Tms ...` or `ppi sampler NOT ready: <why>`. To
   check without waiting for DRM content, send `backend=2` on the [control channel](docs/configuration.md#live-control-channel)
   and read the `ppi` block in telemetry (`ready`, `init_error`, `cond_slots`, `cond_sleep_ms`); send
   `backend=0` to go back. The slot count and settle time come from what your TV reports, never from the
   numbers measured on the S84F.
 
 Reports from other TVs are the most useful thing you can send; see [device reports](#device-reports).
+
+### S95B setup (build v7)
+
+Set `captureBackend` to `"ppi"` in your private `config.json` and use a Samsung partner certificate.
+This path needs neither the video-plane nor file-capture library. Start with `ppiZones: 12` and
+`ppiSettleMs: -1` (the TV-reported delay); the tested TV reported two slots, 16x16 blocks,
+3840x2160 coordinates and 20 ms settle time. Steady sampling reached about 99 readings/s,
+or about 8 updates/s per measured position at 12 positions; bar probes temporarily reduce that rate.
+The output is interpolated over the whole strip, not a full captured picture.
+
+The initial end-to-end SDR validation used `adaptiveGamma: 0`, `gamma: 1`, `black: 0`,
+`punch: 0` and `staleMs: 0`. These are a neutral starting point, not automatic colour calibration.
+The sampler uses measured RGB directly; the plane's PQ decode and gamut conversion do not apply.
+Red, green and blue had the correct dominant channel at WLED, white was non-black, and black
+produced all-zero LEDs. Exact colour fidelity and physical strip alignment still need visual checking.
 
 ## DRM content
 

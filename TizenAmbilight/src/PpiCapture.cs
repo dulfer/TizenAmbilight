@@ -10,7 +10,9 @@ namespace TizenAmbilight
     /// <summary>
     /// HARDWARE PIXEL SAMPLER, used when the video plane is withheld (DRM, rc=-4).
     ///
-    /// libvideoenhance.so exports a small RGB-measure API ("ppi_ve_*"). It is the interface Samsung's own
+    /// libvideoenhance.so exports a small RGB-measure API ("cs_ve_*", "ve_*" or "ppi_ve_*").
+    /// The S95B/Tizen 6.5 exports cs_ve_*; the S84F/Tizen 9 exports ppi_ve_*.
+    /// It is the interface Samsung's own
     /// Tizen.TV.System.ContentAnalysis wraps for the Philips Hue Sync app, and it is documented nowhere
     /// else. It measures the mean colour of a small block INSIDE the TV's video processor; it never hands
     /// out a frame, so this backend reads a few spot colours, not pixels:
@@ -51,19 +53,20 @@ namespace TizenAmbilight
     {
         public const string BackendName = "ppi";
         const string LibPath = "/usr/lib/libvideoenhance.so";
-        const string SymCond = "ppi_ve_get_rgb_measure_condition";
-        const string SymPos = "ppi_ve_set_rgb_measure_position";
-        const string SymPix = "ppi_ve_get_rgb_measure_pixel";
+        public static string ApiFamily = "";
+        public static string SymbolReport = "not probed";
+        public static string PlatformVersion = "";
 
         const int RTLD_LAZY = 0x00001;
         const int BufBytes = 256;
-        const int MaxSlots = 16;             // sanity bound on the slot count the library reports
         const int MinSettleMs = 1, MaxSettleMs = 100;   // clamp on the settle time the library reports
 
         [DllImport("libdl.so.2", EntryPoint = "dlopen", CharSet = CharSet.Ansi)]
         static extern IntPtr dlopen(string filename, int flags);
         [DllImport("libdl.so.2", EntryPoint = "dlsym", CharSet = CharSet.Ansi)]
         static extern IntPtr dlsym(IntPtr handle, string symbol);
+        [DllImport("libdl.so.2", EntryPoint = "dlerror")]
+        static extern IntPtr dlerror();
 
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate int CondFn(IntPtr cond);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] delegate int PosFn(int slot, int x, int y);
@@ -115,41 +118,45 @@ namespace TizenAmbilight
             {
                 if (_cond == null)
                 {
-                    // A TV without the library (or with a different export set) ends up here: report why and
-                    // stay on the video plane. Nothing below makes a ppi_ve call until every symbol resolved.
+                    // Resolve a complete family before making any native measurement calls.
                     if (_lib == IntPtr.Zero) _lib = dlopen(LibPath, RTLD_LAZY);
                     if (_lib == IntPtr.Zero) _lib = dlopen("libvideoenhance.so", RTLD_LAZY);
-                    if (_lib == IntPtr.Zero) return Fail("dlopen libvideoenhance.so failed (no hardware measure API on this TV)");
-                    IntPtr fc = dlsym(_lib, SymCond), fp = dlsym(_lib, SymPos), fx = dlsym(_lib, SymPix);
-                    if (fc == IntPtr.Zero || fp == IntPtr.Zero || fx == IntPtr.Zero)
-                        return Fail("dlsym failed: cond=" + (fc != IntPtr.Zero) + " pos=" + (fp != IntPtr.Zero) +
-                                    " pix=" + (fx != IntPtr.Zero));
+                    if (_lib == IntPtr.Zero)
+                        return Fail("dlopen libvideoenhance.so failed: " + Marshal.PtrToStringAnsi(dlerror()));
+                    var families = RgbMeasureApi.Discover(name => dlsym(_lib, name), PlatformVersion, out SymbolReport);
+                    if (families.Count == 0) return Fail("no complete RGB-measure family: " + SymbolReport);
                     if (_condBuf == IntPtr.Zero) _condBuf = Marshal.AllocHGlobal(BufBytes);   // once: a retry must not leak
                     if (_colBuf == IntPtr.Zero) _colBuf = Marshal.AllocHGlobal(BufBytes);
-                    Marshal.Copy(_zero, 0, _condBuf, BufBytes);
-                    Marshal.Copy(_zero, 0, _colBuf, BufBytes);
-                    var cond = (CondFn)Marshal.GetDelegateForFunctionPointer(fc, typeof(CondFn));
-                    var pos = (PosFn)Marshal.GetDelegateForFunctionPointer(fp, typeof(PosFn));
-                    var pix = (PixFn)Marshal.GetDelegateForFunctionPointer(fx, typeof(PixFn));
+                    var failures = new List<string>();
+                    foreach (var family in families)
+                    {
+                        Marshal.Copy(_zero, 0, _condBuf, BufBytes);
+                        Marshal.Copy(_zero, 0, _colBuf, BufBytes);
+                        var cond = (CondFn)Marshal.GetDelegateForFunctionPointer(family.Condition, typeof(CondFn));
+                        var pos = (PosFn)Marshal.GetDelegateForFunctionPointer(family.Position, typeof(PosFn));
+                        var pix = (PixFn)Marshal.GetDelegateForFunctionPointer(family.Pixel, typeof(PixFn));
 
-                    CondRc = cond(_condBuf);
-                    Slots = Marshal.ReadInt32(_condBuf, 0);
-                    BlockW = Marshal.ReadInt32(_condBuf, 4);
-                    BlockH = Marshal.ReadInt32(_condBuf, 8);
-                    SleepMsReported = Marshal.ReadInt32(_condBuf, 12);
-                    FullW = Marshal.ReadInt32(_condBuf, 16);
-                    FullH = Marshal.ReadInt32(_condBuf, 20);
-                    CondExtra6 = Marshal.ReadInt32(_condBuf, 24);
-                    CondExtra7 = Marshal.ReadInt32(_condBuf, 28);
-                    if (CondRc < 0) return Fail("ppi_ve_get_rgb_measure_condition rc=" + CondRc);
-                    if (Slots <= 0 || FullW <= 0 || FullH <= 0 || BlockW <= 0 || BlockH <= 0)
-                        return Fail("implausible condition: slots=" + Slots + " full=" + FullW + "x" + FullH +
-                                    " block=" + BlockW + "x" + BlockH);
-                    // Everything the sampler does is derived from what the TV reported, clamped to a sane range:
-                    // the slot count (never addressed beyond it) and the settle time (never below 1 ms).
-                    if (Slots > MaxSlots) Slots = MaxSlots;
-                    SleepMs = Math.Max(MinSettleMs, Math.Min(MaxSettleMs, SleepMsReported));
-                    _cond = cond; _pos = pos; _pix = pix;
+                        CondRc = cond(_condBuf);
+                        Slots = Marshal.ReadInt32(_condBuf, 0);
+                        BlockW = Marshal.ReadInt32(_condBuf, 4);
+                        BlockH = Marshal.ReadInt32(_condBuf, 8);
+                        SleepMsReported = Marshal.ReadInt32(_condBuf, 12);
+                        FullW = Marshal.ReadInt32(_condBuf, 16);
+                        FullH = Marshal.ReadInt32(_condBuf, 20);
+                        CondExtra6 = Marshal.ReadInt32(_condBuf, 24);
+                        CondExtra7 = Marshal.ReadInt32(_condBuf, 28);
+                        if (CondRc < 0 || !RgbMeasureApi.ValidCondition(Slots, BlockW, BlockH, FullW, FullH))
+                        {
+                            failures.Add(family.Name + " condition rc=" + CondRc + " slots=" + Slots +
+                                         " full=" + FullW + "x" + FullH + " block=" + BlockW + "x" + BlockH);
+                            continue;
+                        }
+                        SleepMs = Math.Max(MinSettleMs, Math.Min(MaxSettleMs, SleepMsReported));
+                        _cond = cond; _pos = pos; _pix = pix;
+                        ApiFamily = family.Name;
+                        break;
+                    }
+                    if (_cond == null) return Fail(string.Join("; ", failures.ToArray()));
 
                     // How coarse is Thread.Sleep here? HyperTizen measured ~20 ms; it decides how Wait() may
                     // idle without burning a core.
@@ -784,6 +791,8 @@ namespace TizenAmbilight
             var d = new Dictionary<string, object>
             {
                 { "ready", Ready },
+                { "api_family", ApiFamily },
+                { "symbols", SymbolReport },
                 { "init_error", InitError ?? "" },
                 { "sampler_running", Running },
                 { "thread_errors", Interlocked.Read(ref ThreadErrors) },
