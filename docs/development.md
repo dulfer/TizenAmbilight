@@ -6,6 +6,7 @@ Building from source, signing and installing yourself, tests, diagnostics, and r
 
 - [Build](#build)
 - [Sign and install with your own certificate](#sign-and-install-with-your-own-certificate)
+- [SDK-free signing with Apps2Samsung CLI](#sdk-free-signing-with-apps2samsung-cli)
 - [Tests](#tests)
 - [Diagnostics: telemetry and frame dumps](#diagnostics-telemetry-and-frame-dumps)
 - [Project layout](#project-layout)
@@ -17,6 +18,9 @@ Building from source, signing and installing yourself, tests, diagnostics, and r
 
 You need the .NET 8 SDK. The `Tizen.NET.Sdk` build targets are restored from NuGet, so Tizen Studio is
 **not** needed just to build.
+
+For first-time setup, copy the template below; do not overwrite an existing private `config.json`.
+S95B users must also select [the sampler settings](configuration.md#older-tv-hardware-sampler).
 
 ```bash
 cp TizenAmbilight/config.example.json TizenAmbilight/config.json   # then edit it
@@ -48,6 +52,10 @@ particular TV, and no signing material is committed.
 
 To do it yourself:
 
+The following is the Tizen Studio route. Alternatively, use the
+[standalone Apps2Samsung CLI](#sdk-free-signing-with-apps2samsung-cli); that route was verified
+for the S95B and needs no full SDK.
+
 1. Install [Tizen Studio](https://developer.samsung.com/smarttv/develop/getting-started/setting-up-sdk/installing-tv-sdk.html)
    (the CLI is enough) with the *Samsung Certificate Extension*.
 2. On the TV: **Apps**, type `1 2 3 4 5` on the remote, turn **Developer Mode** on, enter your computer's
@@ -76,6 +84,68 @@ printf '#!/bin/sh\nexec python3 tools/check-secrets.py --staged\n' > .git/hooks/
 chmod +x .git/hooks/pre-commit
 ```
 
+## SDK-free signing with Apps2Samsung CLI
+
+The standalone [Apps2Samsung CLI](https://github.com/Apps2Samsung/Apps2Samsung/releases)
+v3.0.0 was used to obtain a Samsung-issued **Partner** profile and deploy the S95B build.
+Use the binary for your host architecture and verify its release checksum before running it.
+This tool is separate from the app's dependency-free build.
+The TV still needs Developer Mode, the host computer's address configured there, and a reachable
+SDB debug bridge, as described in steps 2-3 of the Tizen Studio route above.
+
+Choose a persistent certificate store **outside the repository**, restrict access to its directory
+and secret files, and back it up securely. The following commands use shell variables for your TV
+address, store path and built package; set these locally, not in tracked files.
+
+```bash
+# Inspect existing profiles without signing in.
+apps2samsung-cli cert --partner --data-dir "$SIGNING_STORE"
+
+# Only if no valid Partner profile covers the target TV:
+apps2samsung-cli cert --prepare --partner --tv "$TV_ADDRESS" \
+  --data-dir "$SIGNING_STORE" --no-browser
+```
+
+Certificate preparation does not install an application. Complete Samsung authentication yourself
+in a browser; never paste tokens, passwords or private keys into chat or logs. For a remote
+development host, forward local port **4794** privately to that host for the callback. In the
+v3.0.0 CLI the callback binds to all interfaces by default: restrict it to loopback or use equivalent
+host-level isolation before starting authentication. Do not expose it to the LAN or internet.
+If the browser reports an error after sign-in, inspect the CLI's actual result and saved profile
+before requesting another certificate.
+
+Check certificate validity, target-DUID coverage, matching private keys and the distributor's
+Samsung **Partner CA** chain, not just its profile folder name. Reuse the same store and author
+keypair on future builds; no renewal or Samsung login is needed while the profile remains valid
+and covers the TV. Do not use `--force-login` for ordinary updates. A different author certificate
+cannot overwrite the existing installation; do not casually remove an app and erase its data to
+work around that.
+
+Before deploying over a running app, write `pause` to its configured control file and wait for
+**fresh telemetry** with both:
+
+```text
+last_status = paused by control channel (no capture calls)
+ppi.sampler_running = false
+```
+
+For an initial installation or a service without control configured, establish through the TV's
+application manager that it is not running. An absent WLED live source does not prove that native
+capture is idle. After the safety check, install the locally built package:
+
+```bash
+apps2samsung-cli install "$TPK_PATH" --partner --tv "$TV_ADDRESS" \
+  --data-dir "$SIGNING_STORE" --keep
+apps2samsung-cli launch dev.ritwickverma.TizenAmbilight --tv "$TV_ADDRESS" \
+  --data-dir "$SIGNING_STORE"
+```
+
+The CLI signs a copy of the input package; the ordinary build output remains default-signed.
+Retain the signed package separately if needed and verify its distributor certificate matches the
+saved profile. Resume with `run`, then require fresh sampler telemetry and WLED-side receipt checks
+before claiming the deployment works. `--keep` retains the package; neither that option nor a
+successful install proves capture is producing fresh colours.
+
 ## Tests
 
 `decoder-selftest/` is a plain `net8.0` console harness. It compiles the **same source files** as the
@@ -93,6 +163,9 @@ dotnet run --project decoder-selftest/DecoderSelfTest.csproj     # ends "PASSED 
   12-bit, truncated input) rather than decode it wrongly.
 * Zone layout, EMA arithmetic, DRGB packets and LED mapping, `config.json` parsing and power-state
   extraction are covered as well.
+* `RgbMeasureApi` discovery covers legacy `cs_ve`, middle-generation `ve` and newer `ppi_ve`
+  exports, family preference, missing/partial families and invalid sampler conditions.
+  At build v7 the harness reports **88 passed, 0 failed**.
 
 The test data is generated, then checked in. To regenerate it (the JPEG cases need Pillow):
 
@@ -102,7 +175,9 @@ cd decoder-selftest && python3 gen_testdata.py && python3 gen_jpeg_testdata.py
 
 A new shared source file must be added to `DecoderSelfTest.csproj` with `<Compile Include=...>`, or the
 harness will not see it. The Tizen and P/Invoke layer (`VideoPlaneCapture` capture calls, `CaptureApi`,
-`Preference`) cannot run off the TV and is not unit-tested. On the device, `PngSelfTest.cs` checks the
+`PpiCapture` native calls, `Preference`) cannot run off the TV and is not unit-tested. Linking
+`PpiCapture.cs` into the harness checks compilation, not native hardware behaviour.
+On the device, `PngSelfTest.cs` checks the
 PNG decoder at every start and reports PASS/FAIL in the startup telemetry.
 
 ## Diagnostics: telemetry and frame dumps
@@ -137,6 +212,12 @@ cat ambstats/appframe_Y ambstats/appframe_C > /tmp/f.nv12
 ffmpeg -f rawvideo -pix_fmt nv12 -s 960x540 -i /tmp/f.nv12 -y /tmp/f.png
 ```
 
+This dump applies only to video-plane capture. The S95B sampler has no Y/C planes to dump;
+use `ppi.raw10_sample`, rate/error counters and WLED live pixel preview instead.
+See the [S95B engineering notes](how-it-works.md#s95b-compatibility-and-api-discovery) for the
+validated path and the explicit limits of the device tests. Normal `sdb shell` and `dlog` were
+restricted on the tested S95B; empty output must not be interpreted as a successful diagnostic.
+
 ## Project layout
 
 | path | what |
@@ -149,6 +230,9 @@ ffmpeg -f rawvideo -pix_fmt nv12 -s 960x540 -i /tmp/f.nv12 -y /tmp/f.png
 | `TizenAmbilight/src/Telemetry.cs` | run statistics and reports |
 | `TizenAmbilight/src/VideoPlaneCapture.cs` | default backend: `libvideo-capture`, YUV→RGB, HDR, gamut |
 | `TizenAmbilight/src/CaptureApi.cs` | legacy file backend: `dc_request_capture_to_file_sync` |
+| `TizenAmbilight/src/RgbMeasureApi.cs` | host-testable complete-family discovery and condition guards |
+| `TizenAmbilight/src/PpiCapture.cs` | independent hardware RGB sampler, native calls, probes and telemetry |
+| `TizenAmbilight/src/PpiBackend.cs` | sampler initialization and automatic DRM handover glue |
 | `TizenAmbilight/src/ZoneEngine.cs` | zone layout, per-zone averaging, smoothing helpers |
 | `TizenAmbilight/src/WledOutput.cs` | DRGB packet building, mapping, tone LUT, UDP send |
 | `TizenAmbilight/src/PowerState.cs` | TV local-API power probe |

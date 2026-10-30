@@ -39,12 +39,38 @@ function families; on Tizen below 7 it prefers `cs_ve`, otherwise it preserves t
 TV's `ppi_ve` preference. A family with a failed or implausible condition response is not used.
 The existing default remains `"video_plane"`; sampler selection is explicit, except for the
 existing automatic DRM fallback.
+The live token `backend=2` selects the same sampler for the current process only; live controls
+do not write `config.json`. Persist `"captureBackend": "ppi"` for the next launch.
 
 Start with `"ppiZones": 12` and `"ppiSettleMs": -1`. On the S95B each spot refreshes about
 8 times/s between bar probes. Higher `targetFps` renders smoothing more often but does not
 increase measurement freshness. Telemetry's `ppi.api_family`, `ppi.symbols`,
 `ppi.samples_per_s_window` and `ppi.per_zone_refresh_hz` expose the actual backend and rate.
 `platform_version` and `process_pointer_bits` describe the runtime.
+
+Merge the following into your private settings alongside your own `wledIp`, `ledCount` and
+mapping. Do not copy one installation's addresses or physical strip layout into shared defaults.
+
+```json
+{
+  "captureBackend": "ppi",
+  "ppiZones": 12,
+  "ppiSettleMs": -1,
+  "targetFps": 25,
+  "adaptiveGamma": 0,
+  "gamma": 1,
+  "black": 0,
+  "punch": 0,
+  "staleMs": 0
+}
+```
+
+These are the neutral colour/motion settings used for S95B validation, not required global defaults
+or a colour calibration. Sampler RGB bypasses the plane's `hdr`/`gamut` processing. Keep the
+TV-reported settle delay unless freshness has been measured on the target firmware.
+The current Apps2Samsung catalog form does not expose backend selection; for this setup, build a
+local TPK with your private `config.json`, then re-sign it using a
+[partner profile](development.md#sdk-free-signing-with-apps2samsung-cli).
 
 ### Getting the LED mapping right
 
@@ -147,11 +173,11 @@ string-valued token is dropped silently. NaN and Infinity are rejected explicitl
 | `bars` / `brows` / `bthr` | 0/1 / 0/1 / 4–80 | black-bar detection |
 | `zs` / `fps` | 1–8 / 0–120 | zone stride, frame cap |
 | `cw` / `ch` | 64–960 / 64–540 | video-plane request size |
-| `backend` | 0/1/2 | 0 = video plane (hands over to the fallback by itself on DRM), 1 = legacy file backend, 2 = force the DRM-fallback sampler |
-| `pz` / `psleep` / `ppibars` | 4-73 / -1-200 / 0/1 | DRM fallback: spots measured, settle ms (-1 = TV-reported), crop spots to the picture when letterboxed |
-| `ppigrid` / `pfresh` | 1 / 1 or 2 | DRM fallback diagnostics, read-only: 32x18 thumbnail into telemetry; freshness test at several settle times |
+| `backend` | 0/1/2 | 0 = video plane (automatic fallback on DRM), 1 = legacy file backend, 2 = independent hardware sampler (S95B primary source or forced fallback) |
+| `pz` / `psleep` / `ppibars` | 4-73 / -1-200 / 0/1 | Hardware sampler: spots measured, settle ms (-1 = TV-reported), crop spots to the picture when letterboxed |
+| `ppigrid` / `pfresh` | 1 / 1 or 2 | Hardware-sampler diagnostics, read-only: 32x18 thumbnail into telemetry; freshness test at several settle times |
 | `zhex` | 0/1 | report every zone in telemetry |
-| `dump` | 1 | send the next frame's raw planes to the collector |
+| `dump` | 1 | send the next video-plane frame's raw planes to the collector; unavailable in sampler mode |
 | `shutdown` | 1 | run the shutdown path (blackout, log flush) and exit |
 
 A sticky `pause` is possible: if the control host dies while the body says `pause`, the app stays

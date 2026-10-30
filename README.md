@@ -8,6 +8,7 @@
 **A real-frame ambilight for Samsung Tizen TVs.** One small headless app runs *on the TV*, reads the
 decoded video picture straight out of memory, and drives a [WLED](https://kno.wled.ge/) LED strip over
 your Wi-Fi.
+On the S95B it instead reads hardware-measured spot colours; see [S95B setup](#s95b-setup-build-v7).
 
 [![TizenAmbilight running on a Samsung S84F: the LED glow behind the TV follows the colours of the picture](docs/media/showcase-preview.webp)](docs/media/showcase.mp4)
 
@@ -18,10 +19,10 @@ phone's HDR recording to standard dynamic range, audio removed).*
 * **No extra hardware.** No capture card, HDMI splitter or Raspberry Pi; just the TV and a WLED strip.
 * **No middleware.** No Hyperion or HyperHDR server in between. One process goes from capture to colour
   maths to UDP, at about 25 fps.
-* **The whole picture.** It averages the full 960×540 video plane into perimeter zones, rather than a
-  handful of sample points.
-* **HDR-aware.** It decodes PQ (HDR10) properly, maps BT.2020 colours into what LEDs can show, and adapts
-  the tone curve to the scene.
+* **The whole picture on the S84F.** The full-frame backend averages the 960×540 video plane into
+  perimeter zones. The S95B uses a handful of hardware sample points instead.
+* **HDR-aware full-frame path.** It decodes PQ (HDR10), maps BT.2020 colours into what LEDs can show,
+  and adapts the tone curve to the scene. The sampler uses measured RGB without this HDR decode.
 * **Keeps going under DRM, coarsely.** Streaming apps withhold the video plane. The app then switches to
   the TV's own built-in colour measurement (the one Samsung's Hue Sync support uses): a handful of spot
   colours instead of the whole picture, and far slower. See [DRM content](#drm-content).
@@ -37,6 +38,7 @@ phone's HDR recording to standard dynamic range, audio removed).*
 ## Contents
 
 - [Compatibility](#compatibility)
+- [S95B setup](#s95b-setup-build-v7)
 - [DRM content](#drm-content)
 - [What you need](#what-you-need)
 - [Install](#install)
@@ -100,6 +102,12 @@ The initial end-to-end SDR validation used `adaptiveGamma: 0`, `gamma: 1`, `blac
 The sampler uses measured RGB directly; the plane's PQ decode and gamut conversion do not apply.
 Red, green and blue had the correct dominant channel at WLED, white was non-black, and black
 produced all-zero LEDs. Exact colour fidelity and physical strip alignment still need visual checking.
+Four logical edge-midpoint checks also passed. Protected streaming, HDMI, standby/wake and cold-boot
+autostart have not been verified on the S95B.
+
+See the [copyable sampler settings](docs/configuration.md#older-tv-hardware-sampler),
+[SDK-free partner signing](docs/development.md#sdk-free-signing-with-apps2samsung-cli) and
+[engineering notes](docs/how-it-works.md#s95b-compatibility-and-api-discovery).
 
 ## DRM content
 
@@ -186,8 +194,9 @@ with the new values (read [Updating safely](#updating-safely) first).
 ### Option 2: build from source and sign it yourself
 
 You need your own Samsung certificate profile **for your own TV's DUID**, at the **partner** privilege
-level (Tizen Studio's Certificate Manager creates it with the TV connected); that is why nobody else's
-signed package will work for you. A public-level certificate installs, but capture is blocked.
+level (created with Tizen Studio's Certificate Manager or the standalone Apps2Samsung CLI).
+A public-level certificate installs, but capture is blocked. For the S95B, include
+`"captureBackend": "ppi"` in your private settings before building.
 
 ```bash
 git clone https://github.com/RitwickVerma/TizenAmbilight.git && cd TizenAmbilight
@@ -195,15 +204,15 @@ cp TizenAmbilight/config.example.json TizenAmbilight/config.json      # set wled
 dotnet msbuild TizenAmbilight/TizenAmbilight.csproj -restore -t:Rebuild -p:Configuration=Release
 ```
 
-Then re-sign the TPK with your profile and install it with the Tizen CLI. The steps are in
+Then re-sign the TPK with your saved profile and install it using either signing route in
 [docs/development.md](docs/development.md#sign-and-install-with-your-own-certificate).
 
 ### If you only set `wledIp`
 
-Nothing else is required. With **no** settings at all the app starts, computes colours and sends nothing
-anywhere (its log and telemetry say `no wledIp configured`). With only `wledIp` (and `ledCount`) set it
-drives the strip; the telemetry collector (`probeEndpoint`) and the control channel (`controlUrl`) are
-optional helpers, off unless you set them.
+On the S84F's default full-frame path, nothing else is required. The S95B also requires
+`captureBackend: "ppi"`. With **no** WLED address the app sends no LED packets (its log and telemetry
+say `no wledIp configured`). The telemetry collector (`probeEndpoint`) and control channel
+(`controlUrl`) are optional helpers, off unless you set them.
 
 ### Starting it
 
@@ -226,8 +235,9 @@ essentials:
 }
 ```
 
-Everything else (brightness curve, smoothing, HDR handling, bar detection, the DRM fallback's
-`ppiZones`, ...) has a tuned default.
+Everything else (brightness curve, smoothing, HDR handling, bar detection, the sampler's
+`ppiZones`, ...) has a tuned default for the reference S84F. On the S95B start with the
+[sampler settings](docs/configuration.md#older-tv-hardware-sampler).
 [docs/configuration.md](docs/configuration.md) lists every setting. It also covers the optional
 **live control channel**, which lets you tune settings and line the strip up while you watch, without
 reinstalling.
@@ -240,7 +250,8 @@ reinstalling.
 > minute**. Nothing is damaged, but it is confusing.
 
 * If you run the [control channel](docs/configuration.md#live-control-channel), send `pause` before
-  installing and `run` afterwards. A paused app makes no capture calls, so the install is safe.
+  installing. Wait for fresh telemetry reporting `last_status: "paused by control channel (no capture calls)"`
+  and `ppi.sampler_running: false`; only then install and send `run` afterwards.
 * Otherwise: install, then unplug the TV for 60 s and plug it back in. That clears a stuck scaler and
   starts the new version.
 * Upgrading from a build older than v5 (package id `io.gh.hermes.TizenAmbilight`)? The package id has
@@ -280,12 +291,14 @@ Not as built. Those TVs ship an older .NET runtime and expose different capture 
 [Compatibility](#compatibility)
 
 **Does it need the internet or any account?**
-No. It talks to your WLED controller and, if you configure them, two optional helpers on your LAN.
-Nothing is sent anywhere by default.
+Not during normal operation. It talks to your WLED controller and, if you configure them, two optional
+helpers on your LAN. Nothing is sent anywhere by default. Obtaining the signing certificate requires
+internet access and a Samsung account; the saved profile can be reused for later builds.
 
 **How is this different from HyperTizen or TizenGlow?**
-Those sample a few points through a different Samsung library and support many more TVs. This one
-reads the whole decoded frame and talks to WLED directly. There is a
+Those sample a few points through a Samsung library and support many more TVs. This app can read the
+whole decoded frame on the S84F, or use hardware spot sampling on the S95B and during DRM fallback.
+Both paths talk directly to WLED. There is a
 [comparison](docs/how-it-works.md#how-this-differs-from-other-tizen-ambilights).
 
 ## How it works
@@ -293,6 +306,9 @@ reads the whole decoded frame and talks to WLED directly. There is a
 ```
 video plane (960x540, in memory) -> perimeter zones -> HDR decode + gamut map
   -> smoothing + scene-adaptive tone curve -> one WLED DRGB datagram per frame
+
+S95B: hardware RGB spots -> perimeter interpolation (no full frame or PQ decode)
+  -> shared smoothing + tone curve -> WLED DRGB output
 ```
 
 The capture ABI was recovered by static analysis of the TV's own libraries and anchored to return values

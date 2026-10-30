@@ -14,12 +14,26 @@ video plane (960x540 NV12, in memory)
   -> WLED DRGB over UDP :21324
 ```
 
+That is the full-frame S84F path. The S95B uses a separate primary source:
+
+```
+video processor (libvideoenhance, cs_ve_* on Tizen 6.5)
+  -> TV-reported RGB-measure slots -> rolling perimeter spots (12 in S95B validation)
+  -> 10-bit RGB reduced to 8-bit -> interpolate over N perimeter zones
+  -> shared smoothing, tone map and WLED DRGB output
+```
+
+The sampler never receives a frame and does not apply the plane's PQ decode or gamut conversion.
+The default remains `video_plane`; S95B installations select `captureBackend: "ppi"` explicitly.
+See [S95B setup](../README.md#s95b-setup-build-v7).
+
 ## Contents
 
 - [Why the video plane](#why-the-video-plane)
 - [Colour handling](#colour-handling)
 - [Zones, sampling and mapping](#zones-sampling-and-mapping)
 - [DRM fallback](#drm-fallback)
+- [S95B compatibility and API discovery](#s95b-compatibility-and-api-discovery)
 - [Output](#output)
 - [Liveness, standby and safety](#liveness-standby-and-safety)
 - [How this differs from other Tizen ambilights](#how-this-differs-from-other-tizen-ambilights)
@@ -71,9 +85,12 @@ the library fills in (`ret_y_pitch = 960`, `ret_c_pitch = 960`, `ret_interlaced 
 | +0x2c | u32 | `ret_y_pitch` (out) |
 | +0x30 | u32 | `ret_c_pitch` (out) |
 
-The chroma layout was settled on the device: NV12 interleaved, pitch 960, non-interlaced. This was
+The chroma layout was settled on the S84F: NV12 interleaved, pitch 960, non-interlaced. This was
 confirmed two independent ways: by autocorrelation of a dumped plane (period-2 byte alternation), and
 by the library's own `ret_c_pitch`.
+
+These are validated ARM32 offsets, not a cross-model ABI guarantee. Build v7 refuses this backend
+in a 64-bit process before writing pointers. Full-frame capture has not been verified on the S95B.
 
 ### Legacy file backend (non-default)
 
@@ -176,7 +193,7 @@ When a streaming app plays protected video, `secvideo_api_capture_video_main` re
 The plane is withheld. **TizenAmbilight does not try to get around that:** it never reads the
 protected plane, never touches the secure path, and has no way to obtain a frame of protected video.
 
-What it does instead is use the same interface Samsung's own Hue Sync support uses,
+On the S84F it instead uses the same interface Samsung's own Hue Sync support uses,
 `libvideoenhance.so` `ppi_ve_*`. That is the video processor's RGB-measure block: you give it a screen
 position and it returns the mean 10-bit R, G, B of a small block there. It is the TV's own sanctioned
 measurement, and what comes out is a colour, not an image.
@@ -192,12 +209,13 @@ ppi_ve_get_rgb_measure_pixel       -> mean R, G, B of that block
 
 * After **3 consecutive `rc=-4`** from the plane. `rc=-1` ("not ready") neither counts nor resets the
   streak, so the normal post-start burst cannot trigger it.
-* Or on demand with the control token `backend=2` (and `backend=0` to leave it).
+* Or independently with `captureBackend: "ppi"` or the control token `backend=2`
+  (`backend=0` returns to the plane). Forced sampling does not probe the plane for hand-back.
 * It needs `libvideoenhance.so` and all three symbols. If anything is missing or the TV reports an
   implausible condition, initialisation fails with a reason in the log and in telemetry
-  (`ppi.init_error`), the app **stays on the plane**, and no further `ppi_ve` call is made. It retries
-  at most every 30 s while DRM content keeps the plane withheld.
-* While the fallback carries the strip, the plane is probed **twice a second**. The first `rc=0` hands the
+  (`ppi.init_error`). Automatic fallback stays on the plane; forced sampler mode reports failure
+  without silently switching source. Initialization retries at most every 30 s while needed.
+* While automatic fallback carries the strip, the plane is probed **twice a second**. The first `rc=0` hands the
   strip back. The hand-back was seen to trigger once on a pre-release
   build: in a static scene the plane answered `rc=0` while the streaming app was still visible, the
   strip returned to the plane, and about 20 s later the plane was `rc=-4` three times again and the
@@ -220,7 +238,7 @@ instead of the picture.
 
 ### Rolling sampler and what "fps" means here
 
-One sampler thread owns every `ppi_ve` call. It walks `pz` positions spread evenly round the screen
+One sampler thread owns the selected family's position/pixel calls. It walks `pz` positions spread evenly round the screen
 edge (`ppiZones`, default 24), two at a time: arm both slots, wait, read both. The render loop never
 waits for it. At the usual ~25 fps it takes the latest values, interpolates the `pz` measured zones
 linearly round the ring onto all zones, and runs the normal smoothing, tone map and WLED path.
@@ -255,8 +273,9 @@ picture rectangle. `ppibars=0` turns this off.
   decode. The strip follows the picture's colours, but it is not the same pipeline as the plane's.
 * **Hand-back to the plane** after protected playback really ends has not been observed (only the
   intermittent static-scene `rc=0` flip described above).
-* Behaviour on any other TV is unknown. The slot count and settle time are read from the TV and clamped,
-  nothing is hard-coded to the S84F's values, but that has only been exercised on one set.
+* Protected-playback behaviour on other TVs is unknown. The S95B's sampler was separately verified
+  with non-protected native video, not with protected streaming. Slot count and settle time come from
+  the selected family's condition response, not constants measured on the S84F.
 
 ### Diagnostics
 
@@ -266,6 +285,48 @@ and `per_zone_refresh_hz`, bar-probe results, and a six-point raw sample. Two re
 32x18 thumbnail of the picture (`grid_32x18_hex`), and `pfresh=1|2` runs a freshness test (does a slot
 return the colour of the position it was just pointed at?) at several settle times and reports
 `fresh_test`.
+
+## S95B compatibility and API discovery
+
+Build v7 also uses the hardware sampler as an independent primary backend on the 2022
+`QE55S95BATXXN` running Tizen 6.5. The same `tizen90` build was installed with a Samsung partner
+certificate and ran as a 32-bit process; no framework retargeting was needed on this device.
+
+`RgbMeasureApi` discovers three exports together for each family:
+`*_get_rgb_measure_condition`, `*_set_rgb_measure_position` and `*_get_rgb_measure_pixel`.
+Partial families are reported but never combined. Preference order is:
+
+| Runtime | Candidate order |
+|---|---|
+| Tizen below 7 | `cs_ve`, `ve`, `ppi_ve` |
+| Tizen 7+, or unknown version | `ppi_ve`, `ve`, `cs_ve` |
+
+Version only orders candidates. A family must have all three exports and a successful, plausible
+condition response before position/pixel calls are allowed. The S95B exposed only `cs_ve_*`;
+the S84F's `ppi_ve_*` preference remains unchanged. `ve_*` discovery is host-tested, not
+verified on a third TV.
+
+Condition validation requires 1-16 slots, positive dimensions no larger than 16384, and positive
+block dimensions smaller than the measurement space. Invalid responses are recorded and the next
+complete family is tried. Existing padded native buffers, slot guards and single-thread ownership
+remain in place.
+
+The S95B reported two slots, 16x16 blocks, 3840x2160 coordinates and 20 ms settle time. At 12
+measured positions, steady operation reached about 99 readings/s, approximately 8 updates/s per
+position; periodic bar probes reduce that temporarily. The spatial layout, interpolation and WLED
+mapping are shared with the S84F, not a model-specific LED implementation.
+
+With `captureBackend: "ppi"` (or live `backend=2`), no video-plane calls are made and neither
+full-frame capture library is required for sampling. This is not automatic DRM fallback: it stays
+on the sampler without polling the plane for hand-back. Missing plane/file initialization also no
+longer prevents the control and telemetry workers from starting.
+
+On-device validation used non-protected video through Samsung AVPlay. All five red/green/blue/
+white/black checks passed against WLED's actual live pixel output, including all-zero LEDs for
+black. A four-edge video also passed at logical LED midpoints. These tests establish colour response
+and logical mapping, not calibrated colour fidelity or visually confirmed physical corner alignment.
+Full-frame capture, HDR accuracy, protected streaming, HDMI, standby/wake and cold-boot autostart
+remain unverified on this TV.
 
 ---
 
@@ -318,11 +379,11 @@ WLED then reverts to its own stored colour, which is how an ambilight ends up gl
 
 | | TizenAmbilight | [HyperTizen](https://github.com/reisxd/HyperTizen) | [TizenGlow](https://github.com/DuckieOnQuacks/TizenGlow) |
 |---|---|---|---|
-| What is read | the full decoded video plane, 960×540 | a handful of sample points (`libvideoenhance`) | 6–14 sample points (`libvideoenhance`) |
+| What is read | full 960×540 video plane on S84F; hardware sample points on S95B or during fallback | a handful of sample points (`libvideoenhance`) | 6–14 sample points (`libvideoenhance`) |
 | Output | WLED DRGB, direct | Hyperion / HyperHDR | WLED DDP or HyperHDR |
-| HDR | PQ decode + BT.2020→709 gamut map | n/a | not documented |
+| HDR | PQ decode + BT.2020→709 on the plane only; sampler RGB has no HDR decode | n/a | not documented |
 | UI | none (config file, optional control URL) | TizenBrew module | TizenBrew module, calibration screen |
-| Tested on | one 2025 TV (Tizen 9) | Tizen 6.5+ | Tizen 6.5+ |
+| Tested on | S84F (Tizen 9, full frame + fallback); S95B (Tizen 6.5, sampler) | Tizen 6.5+ | Tizen 6.5+ |
 
-Those projects support far more TVs today. TizenAmbilight trades that reach for reading the whole
-picture.
+Those projects document broader platform support. TizenAmbilight retains its full-picture path where
+verified and can use the shared spot-sampling approach on the S95B.
