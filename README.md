@@ -10,6 +10,15 @@ decoded video picture straight out of memory, and drives a [WLED](https://kno.wl
 your Wi-Fi.
 On the S95B it instead reads hardware-measured spot colours; see [S95B setup](#s95b-setup-build-v7).
 
+## Tizen 6.5 support and original work
+
+The Tizen 6.5 additions extend the original project with a separate hardware-sampling path for
+compatible TVs such as the S95B, selectable with `captureBackend: "ppi"`. Instead of capturing a full
+image, it measures colour in small areas around the screen and interpolates those readings across the
+LED zones. This makes Ambilight possible on older firmware, with coarser and slower updates than the
+full-frame path. Credit and thanks to [ritwick7](https://gitlab.com/ritwick7), the original developer,
+for the foundational work bringing native Ambilight to Samsung Tizen TVs.
+
 [![TizenAmbilight running on a Samsung S84F: the LED glow behind the TV follows the colours of the picture](docs/media/showcase-preview.webp)](docs/media/showcase.mp4)
 
 *A 10-second loop from a phone recording on a 2025 Samsung S84F, using the full-picture capture path at
@@ -37,6 +46,7 @@ phone's HDR recording to standard dynamic range, audio removed).*
 
 ## Contents
 
+- [Tizen 6.5 support and original work](#tizen-65-support-and-original-work)
 - [Compatibility](#compatibility)
 - [S95B setup](#s95b-setup-build-v7)
 - [DRM content](#drm-content)
