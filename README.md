@@ -10,6 +10,8 @@ decoded video picture straight out of memory, and drives a [WLED](https://kno.wl
 your Wi-Fi.
 On the S95B it instead reads hardware-measured spot colours; see [S95B setup](#s95b-setup-build-v7).
 
+**Designed to keep ambilight running during DRM-protected playback:** when the TV refuses full-frame capture, the app can switch to the TV’s built-in spot-colour sampler. It does not capture or copy protected video, and the result is coarser and slower than full-frame capture. Protected playback has been verified on the S95B, but support may vary by TV and firmware.
+
 ## Tizen 6.5 support and original work
 
 The Tizen 6.5 additions extend the original project with a separate hardware-sampling path for
