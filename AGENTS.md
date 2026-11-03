@@ -34,7 +34,7 @@ Never install while the app is capturing. Send `pause`, then require fresh telem
 ## Test
 - Framework: custom console harness `decoder-selftest/` (`net8.0`, no xUnit/NUnit); exits non-zero on any FAIL. Prints `PASSED n  FAILED m`.
 - Test data is generated, then checked in: `gen_testdata.py` (hand-written PNG encoder, no deps) and `gen_jpeg_testdata.py` (needs **Pillow**; Pillow's decode is the reference). Output goes to `decoder-selftest/testdata/`; regenerating at HEAD left `git status` clean.
-- The harness compiles the *same* source files the app uses (`PngDecoder`, `JpegDecoder`, `PngSelfTest`, `ZoneEngine`, `WledOutput`, `Json`, `VideoPlaneCapture`, `ConfigFile`, `PowerState`, `RgbMeasureApi`, `PpiCapture`) via `<Compile Include="../TizenAmbilight/src/...">`. Add a new shared file there or the harness will not see it. API-family discovery and condition guards are host-tested; native capture calls still need the TV.
+- The harness compiles the *same* source files the app uses (`PngDecoder`, `JpegDecoder`, `PngSelfTest`, `ZoneEngine`, `WledOutput`, `Json`, `VideoPlaneCapture`, `ConfigFile`, `PowerState`, `RgbMeasureApi`, `PpiCapture`, `UserSettings`, plus `../TizenAmbilight.Settings/src/SettingsModel.cs`) via `<Compile Include="../TizenAmbilight/src/...">`. Add a new shared file there or the harness will not see it. API-family discovery and condition guards are host-tested; native capture calls still need the TV.
 - On-device self-check: `PngSelfTest.cs` runs at app start and reports PASS/FAIL in the startup telemetry.
 - No mocking framework. The Tizen/P-Invoke layer (`CaptureApi`, `VideoPlaneCapture` and `PpiCapture` native calls, the HTTP part of `PowerState`, `Preference`) is not unit tested.
 
@@ -44,7 +44,7 @@ cd decoder-selftest
 python3 gen_testdata.py && python3 gen_jpeg_testdata.py
 dotnet run --project DecoderSelfTest.csproj
 ```
-Expected at build v7: `PASSED 88   FAILED 0`.
+Expected at build v8: `PASSED 125   FAILED 0`.
 
 CI: `.gitlab-ci.yml` (lint job + one .NET build-and-test job; runs on the linked shared runner). The GitLab project push-mirrors every branch and tag to GitHub, where `.github/workflows/ci.yml` repeats the checks and `release.yml` publishes a GitHub Release with the TPK on a `vX.Y.Z` tag that must equal the manifest version. Apps2Samsung installs from that GitHub release.
 
@@ -67,6 +67,9 @@ CI: `.gitlab-ci.yml` (lint job + one .NET build-and-test job; runs on the linked
 | `TizenAmbilight/src/WledOutput.cs` | WLED DRGB UDP packet building/sending, blackout hold. |
 | `TizenAmbilight/src/PowerState.cs` | Reads the TV's own local power-state API (`powerStateUrl`); fails toward "on". |
 | `TizenAmbilight/src/PngDecoder.cs`, `JpegDecoder.cs` | First-party PNG and baseline-JPEG decoders (refuse CMYK/progressive/12-bit). |
+| `TizenAmbilight/src/UserSettings.cs` | Shared file IPC with the Settings app: `settings.json` (atomic write/read), `ui-active` heartbeat, `status.json`, strict IPv4. No Tizen deps. |
+| `TizenAmbilight/src/SettingsLink.cs` | Service side of the Settings app: edge colour test while the heartbeat says `test`, `status.json` only while the app is open. |
+| `TizenAmbilight.Settings/` | On-TV NUI settings app (`dotnet-nui`, package and appid `dev.ritwickverma.AmbilightSettings`), its own TPK (Pitfall 20). `SettingsModel.cs` (menu, values, persistence; harness-tested), `Ui.cs` (theme, rows, popups), `SettingsApp.cs` (screen, keys, heartbeat, launches the service). |
 | `TizenAmbilight/src/Json.cs` | Minimal first-party JSON writer for telemetry. |
 | `TizenAmbilight/src/PngSelfTest.cs` | Embedded 8x8 PNG decode check run on the device. |
 | `decoder-selftest/SelfTestMain.cs` | Host harness `Main`; byte-compares decoders, zone layout, EMA, DRGB packet, JSON. |
@@ -77,11 +80,12 @@ CI: `.gitlab-ci.yml` (lint job + one .NET build-and-test job; runs on the linked
 | `docs/` | `how-it-works.md`, `configuration.md` (all keys and tokens), `development.md` (build, signing, tests, release). |
 
 ## Data flow
-- In repo: all source, `tizen-manifest.xml` (appid `dev.ritwickverma.TizenAmbilight` since v5, was `io.gh.hermes.TizenAmbilight`; service app, `on-boot=true`, `auto-restart=false`, privileges `internet` + `network.get`), `decoder-selftest/testdata/`.
+- In repo: all source, `tizen-manifest.xml` (appid `dev.ritwickverma.TizenAmbilight` since v5, was `io.gh.hermes.TizenAmbilight`; service app, `on-boot=true`, `auto-restart=false`, privileges `internet` + `network.get`), `TizenAmbilight.Settings/tizen-manifest.xml` (separate package `dev.ritwickverma.AmbilightSettings`, same version, privilege `appmanager.launch`), `decoder-selftest/testdata/`.
 - Not in repo: signing certs/profiles (`.gitignore` covers `*.p12 *.pem *.key certs/ profiles.xml` etc.), `TizenAmbilight/config.json`, runtime logs, telemetry output (`--out` dir: `latest.json`, `history.log`, `appframe_Y|C`).
 - Runtime path: TV video plane (960x540 NV12) -> N perimeter zones (default = `ledCount`, else 73) -> colour/tone pipeline -> one WLED DRGB UDP datagram per frame (port 21324; byte0 `0x02`, byte1 timeout s, then RGB per LED).
 - S95B path: video processor RGB-measure slots -> rolling perimeter spot measurements -> interpolate over N zones -> shared smoothing/tone/WLED output. No captured frame or NV12 dump exists on this path. Missing plane/file libraries must not block live control or telemetry.
 - Control channel: app GETs `controlUrl` every 250 ms; body is comma-separated tokens (`pause`, `run`, `hdr=1`, `backend=1`, `shutdown=1`, ...). Full token and settings list: `docs/configuration.md`. Tokens are **one-shot**; an omitted token keeps its last value.
+- TV settings: precedence Preference > `settings.json` (service package's `shared/trusted`, written by the Settings app, survives updates) > `res/config.json` > default. The service polls its mtime/size every 1 s and applies only changed fields, so live control tokens survive. Heartbeat `ui-active` (fresh = 6 s), `status.json`, `defaults.json` (service's bundled config, which the Settings package cannot read) and `service-error.txt` share the same dir; no listener. Both packages must be signed with the same author certificate.
 - Local pause file: `/tmp/amb-control` (default of `tools/control-server.py`).
 - Telemetry: app POSTs JSON every `statsIntervalSec` to `<probeEndpoint>/probe`.
 - All endpoints are unauthenticated by design (SECURITY.md); do not add listeners that bind to all interfaces by default.
@@ -116,3 +120,4 @@ CI: `.gitlab-ci.yml` (lint job + one .NET build-and-test job; runs on the linked
 17. Before v5 the owner's LAN addresses were compiled-in defaults (still in git history before `23c4bdb`); every other install would have sent UDP/HTTP to them. Defaults must stay empty.
 18. Startup once gated the loop on the legacy file library, then forced sampler mode on the plane library. Build v7 removes the sampler dependency and keeps control/telemetry alive after plane/file initialization failure. Do not reintroduce a startup wait loop that makes `backend=2` or `pause` unreachable.
 19. Apps2Samsung patches `res/config.json` by exact find/replace on `config.example.json` lines; reformatting those lines breaks every install (`tools/check-apps2samsung.py` guards it). It reads package ids only from `config.xml`, so its "remove old version" option does nothing for a TPK, and it does not stop the running app before reinstalling (Pitfall 1).
+20. Never merge the Settings app back into the service TPK. On the S95B, updating a package that holds a service app and a UI app leaves the service stuck in the .NET launcher (managed `Main` never runs, no telemetry; kill/relaunch does not help, only installing a single-app package recovers). Two single-app packages update cleanly; they share files via the service's `shared/trusted`. Do not reuse an app id that was once registered in another package: the TV refuses it with `[118, -22]` (why the Settings id is `dev.ritwickverma.AmbilightSettings`, not `...TizenAmbilight.settings`). A silent service now still reports `booting`/`startup_failed` phases once `Main` runs.

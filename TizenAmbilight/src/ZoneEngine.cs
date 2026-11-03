@@ -64,6 +64,11 @@ namespace TizenAmbilight
     /// (left/right scale with height, top/bottom with width) and any rounding remainder is
     /// given to the bottom edge — which is what makes 73 come out as 13/23/13/24.
     ///
+    /// A strip whose LEDs are NOT spread in proportion to the screen (a gap for the stand, a
+    /// shorter run on one side) sets explicit per-edge counts through <see cref="EdgeOverride"/>
+    /// (config keys ledsTop/ledsRight/ledsBottom/ledsLeft, or the on-TV settings app). The override
+    /// only applies when its sum equals the zone total, so a stale override can never misplace zones.
+    ///
     /// Every zone reads a BORDER BAND: a strip `bandFrac` of the frame dimension thick,
     /// running inward from the edge (default 8% — inside the requested 6-10% range). The image
     /// CENTRE is never sampled. Corner regions are intentionally shared between the two edges
@@ -77,10 +82,40 @@ namespace TizenAmbilight
         public readonly double BandFrac;
         public readonly Zone[] Zones;
 
+        static int[] _edgeOverride;
+        static int _edgeGeneration;
+        readonly int _generation;
+
+        /// <summary>Explicit zone counts per edge in WALK ORDER {top, right, bottom, left}, or null for
+        /// the proportional split. Every entry must be at least 1, otherwise the value is treated as
+        /// null. Setting a different value bumps a generation counter so cached layouts (render loop,
+        /// ppi sampler) see <see cref="IsStale"/> and rebuild even when the zone total is unchanged.</summary>
+        public static int[] EdgeOverride
+        {
+            get { var e = _edgeOverride; return e == null ? null : (int[])e.Clone(); }
+            set
+            {
+                int[] next = null;
+                if (value != null && value.Length == 4 && value[0] >= 1 && value[1] >= 1 && value[2] >= 1 && value[3] >= 1)
+                    next = (int[])value.Clone();
+                int[] cur = _edgeOverride;
+                bool same = (cur == null && next == null) ||
+                            (cur != null && next != null && cur[0] == next[0] && cur[1] == next[1] &&
+                             cur[2] == next[2] && cur[3] == next[3]);
+                if (same) return;
+                _edgeOverride = next;
+                System.Threading.Interlocked.Increment(ref _edgeGeneration);
+            }
+        }
+
+        /// <summary>True once <see cref="EdgeOverride"/> changed after this layout was built.</summary>
+        public bool IsStale { get { return _generation != System.Threading.Volatile.Read(ref _edgeGeneration); } }
+
         public ZoneLayout(int width, int height, int total, double bandFrac)
         {
             Total = total;
             BandFrac = bandFrac;
+            _generation = System.Threading.Volatile.Read(ref _edgeGeneration);
 
             BandX = Math.Max(1, (int)Math.Round(width * bandFrac));
             BandY = Math.Max(1, (int)Math.Round(height * bandFrac));
@@ -105,6 +140,12 @@ namespace TizenAmbilight
             int[] counts = { left, top, right, bottom };
             const int BOTTOM = 3;
             int sum = left + top + right + bottom;
+            int[] ov = _edgeOverride;
+            if (ov != null && ov[0] + ov[1] + ov[2] + ov[3] == total)
+            {
+                counts[0] = ov[3]; counts[1] = ov[0]; counts[2] = ov[1]; counts[3] = ov[2];
+                sum = total;
+            }
             while (sum < total) { counts[BOTTOM]++; sum++; }
             while (sum > total && counts[BOTTOM] > 1) { counts[BOTTOM]--; sum--; }
             // extreme fallback: trim from whichever edge is largest
@@ -174,6 +215,24 @@ namespace TizenAmbilight
                 if (z.X1 <= z.X0) z.X0 = Math.Max(0, z.X1 - 1);
                 if (z.Y1 <= z.Y0) z.Y0 = Math.Max(0, z.Y1 - 1);
             }
+        }
+
+        /// <summary>The 4-edge colour test in this layout's zone order, so the LED mapping is visible
+        /// on the strip: top = red, right = green, bottom = blue, left = yellow.</summary>
+        public ZoneColors TestPattern()
+        {
+            var tp = new ZoneColors(Total);
+            int k0 = 0;
+            for (int e = 0; e < 4; e++)
+            {
+                int cnt = (e == 0) ? TopCount : (e == 1) ? RightCount : (e == 2) ? BottomCount : LeftCount;
+                byte r = (byte)(e == 0 || e == 3 ? 255 : 0);
+                byte g = (byte)(e == 1 || e == 3 ? 255 : 0);
+                byte b = (byte)(e == 2 ? 255 : 0);
+                for (int q = 0; q < cnt && k0 < Total; q++, k0++)
+                { tp.R[k0] = r; tp.G[k0] = g; tp.B[k0] = b; }
+            }
+            return tp;
         }
 
         public string Describe()

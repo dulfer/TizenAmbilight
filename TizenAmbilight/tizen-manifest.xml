@@ -4,7 +4,7 @@
     <profile name="tv" />
     <service-application appid="dev.ritwickverma.TizenAmbilight" exec="TizenAmbilight.dll" multiple="false" nodisplay="true" taskmanage="false" api-version="9" type="dotnet" on-boot="true" auto-restart="false">
         <label>TizenAmbilight</label>
-        <icon>TizenAmbilight.png</icon>
+        <icon>TizenAmbilightEngine.png</icon>
         <splash-screens />
     </service-application>
     <shortcut-list />

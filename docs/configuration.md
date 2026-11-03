@@ -1,14 +1,43 @@
 # Configuration
 
-TizenAmbilight reads its settings from two places:
+TizenAmbilight reads its settings from three places:
 
-1. **`config.json`**, bundled into the TPK at build time (or filled in by the Apps2Samsung install
-   form). It is read once, at startup.
-2. The **live control channel**, an optional URL the app polls every 250 ms. It changes settings while
-   the app runs, without a rebuild or reinstall.
+1. The **Ambilight Settings app on the TV** (from build v8). It stores what you change in
+   `settings.json` in the service package's `shared/trusted` directory. The service applies a change within about a second,
+   and the values survive restarts, reinstalls and updates.
+2. **`config.json`**, bundled into the TPK at build time (or filled in by the Apps2Samsung install
+   form). It is read at startup and again whenever `settings.json` changes.
+3. The **live control channel**, an optional URL the app polls every 250 ms. It changes settings while
+   the app runs, without a rebuild or reinstall, and is never saved.
 
-Precedence at startup: Tizen app preference (none are set today) > `config.json` > built-in default.
-The startup log and every telemetry report record which config file was loaded (`config_source`).
+Precedence: Tizen app preference (none are set today) > `settings.json` > `config.json` > built-in
+default. A live control token overrides all of them until the same setting is changed in the Settings
+app or the service restarts. The startup log and every telemetry report record which files were loaded
+(`config_source`, `user_settings_source`).
+
+## Settings app on the TV
+
+Open **Ambilight Settings** from the TV's app list. It follows the TV's own settings menu: categories
+on the left, settings on the right, a short explanation at the bottom of the screen. Use the arrow
+keys to move, **OK** to change a setting, and **Back** to go back or close.
+
+| category | settings |
+|---|---|
+| General | Ambilight on/off (`outputEnabled`), service status, Picture Source (`captureBackend`) |
+| LED Strip | WLED IP Address (`wledIp`), Number of LEDs (`ledCount`), WLED Port (`wledPort`) |
+| LED Layout | Edge Colour Test, Top/Right/Bottom/Left LEDs (`ledsTop` ...), Start Position (`mapOffset`), Direction (`mapReverse`) |
+| Picture | Auto Brightness (`adaptiveGamma`), `gamma`, Colour (`saturation`), Response Speed (`alpha`), `hdr`, Dim Paused Picture (`staleMs`), Ignore Black Bars (`bars`), Update Rate (`targetFps`) |
+| Support | Sampler Points (`ppiZones`), Reset Settings, version |
+
+* **Every change is saved at once.** Sliders save while you move them, so you can judge the strip
+  live. The IP address is typed with the number keys or changed with Up/Down, and saved on OK.
+* **Edge Colour Test** turns the strip into top = red, right = green, bottom = blue, left = yellow while
+  the LED Layout page is open. It needs only the WLED IP address. Change the edge counts, Start Position
+  and Direction until each colour sits on its edge. Leaving the page or the app ends the test.
+* **Reset Settings** deletes `settings.json`, so the values from `config.json` apply again.
+* Settings the app does not show (white balance, `black`, `spatial`, ...) still come from
+  `config.json`.
+* The app also starts the service, in case `on-boot` did not.
 
 ## config.json
 
@@ -82,9 +111,15 @@ your strip on that ring:
   corner of a 23 + 13 + 24 + 13 layout, it is `23 + 13 + 24 = 60`.
 * **`mapReverse`**: `1` if the strip runs counter-clockwise (seen from the front) from its first LED.
 
-To check the result, send `test=1` on the control channel. The strip then shows top = red,
-right = green, bottom = blue, left = yellow. Adjust `map=` and `rev=` live until the colours line up,
-then copy the values into `config.json`.
+To check the result, turn on **Edge Colour Test** on the Settings app's LED Layout page, or send
+`test=1` on the control channel. The strip then shows top = red, right = green, bottom = blue,
+left = yellow. Adjust Start Position and Direction in the app (stored at once), or `map=` and `rev=`
+live on the control channel and then copy the values into `config.json`.
+
+By default the zones are spread over the edges in proportion to the screen shape (a 16:9 screen with
+73 zones gets 23 + 13 + 24 + 13). If your strip differs, for example a shorter bottom run because of
+the stand, set all four of `ledsTop`, `ledsRight`, `ledsBottom` and `ledsLeft`. Their sum becomes the
+zone count.
 
 ### All settings
 
@@ -96,6 +131,7 @@ then copy the values into `config.json`.
 | `wledTimeout` | `1` | seconds WLED stays in live mode after the last frame (DRGB timeout byte) |
 | `ledCount` | `73` | LEDs on the strip, max 490 (one DRGB datagram). Set this. |
 | `zoneCount` | = `ledCount` | screen zones. Fewer than `ledCount` leaves the extra LEDs black. |
+| `ledsTop` / `ledsRight` / `ledsBottom` / `ledsLeft` | `0` (auto) | zones per edge. Only used when all four are at least 1 and the sum is at most 490; the sum then replaces `zoneCount` and raises `ledCount` to at least the sum. |
 | `mapOffset` / `mapReverse` | `0` / `0` | where the strip starts and which way it runs (see above) |
 | `outputEnabled` | `true` | master switch for UDP output |
 | **Colour and tone** | | |

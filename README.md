@@ -55,6 +55,7 @@ phone's HDR recording to standard dynamic range, audio removed).*
 - [What you need](#what-you-need)
 - [Install](#install)
 - [Configuration](#configuration)
+- [Settings on the TV](#settings-on-the-tv)
 - [Updating safely](#updating-safely)
 - [Troubleshooting](#troubleshooting)
 - [FAQ](#faq)
@@ -190,7 +191,9 @@ TizenAmbilight is listed in the Apps2Samsung
 | Strip runs counter-clockwise? | `0` |
 | *(optional)* Spots measured under DRM content (`ppiZones`, 4-73) | `24` |
 
-4. Power-cycle the TV (see [Starting it](#starting-it)).
+4. *(optional)* Also install **TizenAmbilight Settings** from the catalog, the on-TV settings app (see
+   [Settings on the TV](#settings-on-the-tv)). Use the same certificate.
+5. Power-cycle the TV (see [Starting it](#starting-it)).
 
 Not sure about the mapping answers? Use `0` and `0`, then see [Getting the LED mapping right](docs/configuration.md#getting-the-led-mapping-right).
 Leave the optional field alone unless you know you want it. To change an answer later, install again
@@ -214,9 +217,11 @@ A public-level certificate installs, but capture is blocked. For the S95B, inclu
 git clone https://github.com/RitwickVerma/TizenAmbilight.git && cd TizenAmbilight
 cp TizenAmbilight/config.example.json TizenAmbilight/config.json      # set wledIp, ledCount, ...
 dotnet msbuild TizenAmbilight/TizenAmbilight.csproj -restore -t:Rebuild -p:Configuration=Release
+# optional, the on-TV settings app (a second TPK):
+dotnet msbuild TizenAmbilight.Settings/TizenAmbilight.Settings.csproj -restore -t:Rebuild -p:Configuration=Release
 ```
 
-Then re-sign the TPK with your saved profile and install it using either signing route in
+Then re-sign the TPK (both TPKs, with the same profile) and install it using either signing route in
 [docs/development.md](docs/development.md#sign-and-install-with-your-own-certificate).
 
 ### If you only set `wledIp`
@@ -228,10 +233,11 @@ say `no wledIp configured`). The telemetry collector (`probeEndpoint`) and contr
 
 ### Starting it
 
-TizenAmbilight is a background service with no icon or screen. It is set to start when the TV boots
-(`on-boot`), so after installing, **power-cycle the TV** (unplug it, or hold the power button). Some
-other sideloaded projects report that `on-boot` is ignored on their firmware. If the strip stays dark
-after a cold boot, see [Troubleshooting](#troubleshooting).
+TizenAmbilight is a background service. It is set to start when the TV boots (`on-boot`), so after
+installing, **power-cycle the TV** (unplug it, or hold the power button). Some other sideloaded
+projects report that `on-boot` is ignored on their firmware. Opening **Ambilight Settings** from the
+app list also starts the service. If the strip stays dark after a cold boot, see
+[Troubleshooting](#troubleshooting).
 
 ## Configuration
 
@@ -253,6 +259,17 @@ Everything else (brightness curve, smoothing, HDR handling, bar detection, the s
 [docs/configuration.md](docs/configuration.md) lists every setting. It also covers the optional
 **live control channel**, which lets you tune settings and line the strip up while you watch, without
 reinstalling.
+
+### Settings on the TV
+
+From build v8 there is an optional second package, **Ambilight Settings**: an app in the TV's app list
+that looks and works like the TV's own settings menu. Install it next to the service, signed with the
+same certificate. Use it to set the WLED IP address, the number of LEDs, the
+LEDs per screen edge, where the strip starts and which way it runs, plus brightness, colour and
+smoothing. An edge colour test helps line the strip up. Every change is saved at once, applied within
+about a second, and kept across restarts and updates. Values set there take precedence over
+`config.json`; **Reset Settings** returns to it. Details:
+[docs/configuration.md](docs/configuration.md#settings-app-on-the-tv).
 
 ## Updating safely
 

@@ -19,6 +19,10 @@ namespace TizenAmbilight
         // loop reads volatile fields and drops a payload into a ONE-SLOT mailbox. One slot means a slow
         // endpoint can never build a backlog: the newest snapshot replaces the stale one.
         static volatile string _ctrlBody;
+        // ---- on-TV settings app (see UserSettings) ----
+        const int SettingsPollMs = 1000;
+        static int _settingsDirty;              // 1 = settings.json changed; render loop re-applies it
+        static volatile string _uiHeartbeat;    // fresh heartbeat body, or null when the app is closed
         static string _appliedCtrl;
         static int _dumpRequested;      // control token: dump the next captured frame for inspection
         static volatile bool _powerOff;
@@ -194,8 +198,21 @@ namespace TizenAmbilight
             catch { return null; }
         }
 
+        /// <summary>mtime + length of settings.json, "" when absent: cheap change detection.</summary>
+        static string SettingsSignature()
+        {
+            try
+            {
+                var fi = new System.IO.FileInfo(UserSettingsPath);
+                return fi.Exists ? fi.LastWriteTimeUtc.Ticks + ":" + fi.Length : "";
+            }
+            catch { return ""; }
+        }
+
         static void IoWorker(Config cfg)
         {
+            var swSettings = Stopwatch.StartNew();
+            string settingsSig = SettingsSignature();
             var swCtrl = Stopwatch.StartNew();
             var swPower = Stopwatch.StartNew();
             bool tvInfoRead = false;
@@ -226,6 +243,13 @@ namespace TizenAmbilight
                             }
                         }
                         catch (Exception e3) { L("tv info read failed: " + e3.GetType().Name); }
+                    }
+                    if (swSettings.ElapsedMilliseconds >= SettingsPollMs)
+                    {
+                        swSettings.Restart();
+                        string sig = SettingsSignature();
+                        if (sig != settingsSig) { settingsSig = sig; Interlocked.Exchange(ref _settingsDirty, 1); }
+                        _uiHeartbeat = UserSettings.ReadHeartbeat(HeartbeatPath, DateTime.UtcNow);
                     }
                     if (cfg.HasControl && swCtrl.ElapsedMilliseconds >= ControlPollMs)
                     {

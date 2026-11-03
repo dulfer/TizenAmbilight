@@ -1,0 +1,44 @@
+<Project Sdk="Tizen.NET.Sdk/1.1.9">
+
+  <!-- On-TV settings app (NUI), its own TPK (package dev.ritwickverma.AmbilightSettings).
+       It is deliberately NOT merged into the service's package: with both apps in one package the
+       service never started again after an update on the reference TV. The two packages share
+       settings through the service package's shared/trusted directory (see UserSettings.cs), which
+       works because both are signed with the same author certificate. Zero NuGet dependencies, like
+       the service: NUI is part of the Tizen .NET framework on the TV. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>tizen90</TargetFramework>
+    <RootNamespace>TizenAmbilight.Settings</RootNamespace>
+    <AssemblyName>TizenAmbilightSettings</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugType>portable</DebugType>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>None</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="src/**/*.cs" />
+    <!-- Shared with the service, so both read and write settings the same way. -->
+    <Compile Include="../TizenAmbilight/src/ConfigFile.cs" />
+    <Compile Include="../TizenAmbilight/src/UserSettings.cs" />
+    <Compile Include="../TizenAmbilight/src/Json.cs" />
+    <Compile Include="../TizenAmbilight/src/ZoneEngine.cs" />
+    <Compile Include="../TizenAmbilight/src/PngDecoder.cs" />
+    <Compile Include="../TizenAmbilight/src/VideoPlaneCapture.cs" />
+  </ItemGroup>
+
+  <!-- The SDK's default resource glob is Windows-only ("res\**\*"), so declare the icon explicitly
+       (same reason as in TizenAmbilight.csproj). Keep the original logo for the Settings UI. -->
+  <ItemGroup>
+    <TizenTpkFiles Include="../TizenAmbilight/res/TizenAmbilight.png">
+      <TizenTpkSubDir>shared/res/</TizenTpkSubDir>
+      <TizenTpkFileName>TizenAmbilight.png</TizenTpkFileName>
+    </TizenTpkFiles>
+  </ItemGroup>
+
+</Project>

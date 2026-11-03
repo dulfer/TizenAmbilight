@@ -128,6 +128,8 @@ namespace TizenAmbilight
             w["ppi_frames_total"] = st.PpiFrames;
             w["ppi_frames_window"] = st.PpiWindow;
             w["ppi"] = PpiCapture.Describe();
+            w["settings_app"] = _uiHeartbeat ?? "closed";
+            w["user_settings_source"] = ConfigFile.UserSource;
 
             if (layout != null)
             {

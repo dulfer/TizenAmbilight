@@ -113,7 +113,7 @@ namespace TizenAmbilight
 
         public static string Init(int zoneCount, double bandFrac)
         {
-            if (_cond != null && _geomReady && _zones == zoneCount) return null;
+            if (_cond != null && _geomReady && _zones == zoneCount && !LayoutStale) return null;
             try
             {
                 if (_cond == null)
@@ -194,6 +194,8 @@ namespace TizenAmbilight
         }
 
         public static int ZoneTotal { get { return _zones; } }
+        /// <summary>The per-edge zone split changed since the measure positions were placed.</summary>
+        public static bool LayoutStale { get { var l = _geomLayout; return l != null && l.IsStale; } }
 
         // ================================================================ native calls (slot-guarded)
 

@@ -40,7 +40,8 @@ build-and-test:
   script:
     - dotnet run --project decoder-selftest/DecoderSelfTest.csproj
     - dotnet msbuild TizenAmbilight/TizenAmbilight.csproj -restore -t:Rebuild -p:Configuration=Release -v:m
-    - mkdir -p dist && cp TizenAmbilight/bin/Release/tizen90/*.tpk dist/
+    - dotnet msbuild TizenAmbilight.Settings/TizenAmbilight.Settings.csproj -restore -t:Rebuild -p:Configuration=Release -v:m
+    - mkdir -p dist && cp TizenAmbilight/bin/Release/tizen90/*.tpk TizenAmbilight.Settings/bin/Release/tizen90/*.tpk dist/
   artifacts:
     name: "TizenAmbilight-$CI_COMMIT_SHORT_SHA"
     paths: [dist/*.tpk]

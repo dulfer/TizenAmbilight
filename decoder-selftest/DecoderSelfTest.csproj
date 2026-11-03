@@ -2,7 +2,8 @@
 
   <!-- Host-side proof harness. NOT part of the Tizen app: it links the SAME source files the
        Tizen project compiles (PngDecoder.cs, JpegDecoder.cs, PngSelfTest.cs, ZoneEngine.cs,
-       WledOutput.cs, Json.cs, ConfigFile.cs, PowerState.cs, VideoPlaneCapture.cs) into a plain net8.0 executable so the decoders can actually be RUN
+       WledOutput.cs, Json.cs, ConfigFile.cs, PowerState.cs, VideoPlaneCapture.cs, UserSettings.cs,
+       and the settings app's SettingsModel.cs) into a plain net8.0 executable so the decoders can actually be RUN
        and byte-compared against an independent encoder's output. -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -28,6 +29,8 @@
     <Compile Include="../TizenAmbilight/src/PowerState.cs" />
     <Compile Include="../TizenAmbilight/src/RgbMeasureApi.cs" />
     <Compile Include="../TizenAmbilight/src/PpiCapture.cs" />
+    <Compile Include="../TizenAmbilight/src/UserSettings.cs" />
+    <Compile Include="../TizenAmbilight.Settings/src/SettingsModel.cs" />
   </ItemGroup>
 
 </Project>

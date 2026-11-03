@@ -6,10 +6,24 @@ identifier.
 
 ## [Unreleased]
 
+### Added (build v8)
+- **Ambilight Settings**, an on-TV settings app (separate package `dev.ritwickverma.AmbilightSettings`,
+  its own TPK), styled after the TV's own
+  settings menu. It sets the WLED IP address and port, LED count, LEDs per edge, start position,
+  direction, brightness, colour, smoothing, black bars, update rate, picture source and sampler
+  points, and has an edge colour test and a reset. Every change is saved to `settings.json` in the
+  service package's `shared/trusted` directory and kept across restarts and updates.
+- The service applies `settings.json` live within about a second, without a restart. Values set
+  there take precedence over `config.json`.
+- `ledsTop` / `ledsRight` / `ledsBottom` / `ledsLeft`: explicit LEDs per screen edge.
+- Telemetry: `user_settings_source`, `edge_counts`, `settings_app` (heartbeat state).
+- Startup failures are reported: a `booting` telemetry phase every 10 s until the main loop starts, a
+  `startup_failed` report with the stage and log, and `service-error.txt`, shown in the Settings app.
+
 ### Added (build v7)
 - S95B/Tizen 6.5 support through the legacy `cs_ve_*` hardware colour sampler, selected
   with `captureBackend: "ppi"`. Known RGB, white and black video was verified from native
-  measurements through WLED live pixel output on `QE55S95BATxxx`, using a partner-signed
+  measurements through WLED live pixel output on `QE55S95BATXXN`, using a partner-signed
   `tizen90` build without retargeting. Full-frame capture, DRM and HDMI remain unverified
   on this model.
 - Complete-family discovery for `cs_ve_*`, `ve_*` and `ppi_ve_*`, condition validation,

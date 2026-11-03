@@ -21,9 +21,9 @@
        "res\**\*" (Tizen.NET.Sdk.Packaging.targets, TizenComputeTpkResourceFiles), which does
        not match on Linux, so the icon would silently never enter the TPK. Declare it explicitly. -->
   <ItemGroup>
-    <TizenTpkFiles Include="res/TizenAmbilight.png" Condition="Exists('res/TizenAmbilight.png')">
+    <TizenTpkFiles Include="res/TizenAmbilightEngine.png" Condition="Exists('res/TizenAmbilightEngine.png')">
       <TizenTpkSubDir>shared/res/</TizenTpkSubDir>
-      <TizenTpkFileName>TizenAmbilight.png</TizenTpkFileName>
+      <TizenTpkFileName>TizenAmbilightEngine.png</TizenTpkFileName>
     </TizenTpkFiles>
     <!-- Settings, shipped as res/config.json. Your own config.json (gitignored) wins; otherwise the
          committed template ships, which is what the Apps2Samsung install form patches. -->

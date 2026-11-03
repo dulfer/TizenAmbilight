@@ -18,11 +18,20 @@ namespace TizenAmbilight
     /// The file must be one flat JSON object; values may be strings, numbers or booleans. Keys starting
     /// with <c>_</c> are ignored, so <c>"_comment": "..."</c> works as a comment.
     ///
+    /// On top of the bundled file sits the USER layer: <c>settings.json</c> in the package's data
+    /// directory, written by the on-TV settings app (<see cref="UserSettings"/>). Its keys win over
+    /// the bundled file, so a value changed on the TV survives reinstalls that ship a new
+    /// <c>config.json</c>; deleting it ("Reset" in the settings app) restores the bundled values.
+    ///
     /// No Tizen dependency, so the host test harness compiles and exercises it directly.
     /// </summary>
     public static class ConfigFile
     {
         static Dictionary<string, object> _values = new Dictionary<string, object>(StringComparer.Ordinal);
+        static Dictionary<string, object> _user = new Dictionary<string, object>(StringComparer.Ordinal);
+
+        /// <summary>Where the user layer came from: a path, "none", or "error: ...".</summary>
+        public static string UserSource = "none";
 
         /// <summary>Where the values came from, for the startup log and telemetry: a path, "none",
         /// or "error: ..." when a file existed but could not be parsed.</summary>
@@ -59,13 +68,46 @@ namespace TizenAmbilight
             _values = values ?? new Dictionary<string, object>(StringComparer.Ordinal);
         }
 
+        /// <summary>Load the user layer (settings.json). Missing = empty; malformed = ignored as a
+        /// whole and reported in <see cref="UserSource"/>. Never throws.</summary>
+        public static void LoadUser(string path)
+        {
+            _user = new Dictionary<string, object>(StringComparer.Ordinal);
+            UserSource = "none";
+            if (string.IsNullOrEmpty(path)) return;
+            try
+            {
+                if (!System.IO.File.Exists(path)) return;
+                _user = Parse(System.IO.File.ReadAllText(path, Encoding.UTF8));
+                UserSource = path;
+            }
+            catch (Exception e)
+            {
+                _user = new Dictionary<string, object>(StringComparer.Ordinal);
+                UserSource = "error: " + path + ": " + e.Message;
+            }
+        }
+
+        /// <summary>Replace the user layer directly (test harness).</summary>
+        public static void SetUser(Dictionary<string, object> values)
+        {
+            _user = values ?? new Dictionary<string, object>(StringComparer.Ordinal);
+        }
+
         public static int Count { get { return _values.Count; } }
+        public static int UserCount { get { return _user.Count; } }
+
+        static bool TryGetRaw(string key, out object o)
+        {
+            if (_user.TryGetValue(key, out o) && o != null) return true;
+            return _values.TryGetValue(key, out o) && o != null;
+        }
 
         public static bool TryGetString(string key, out string value)
         {
             value = null;
             object o;
-            if (!_values.TryGetValue(key, out o) || o == null) return false;
+            if (!TryGetRaw(key, out o)) return false;
             if (o is string) { value = (string)o; return true; }
             if (o is double) { value = ((double)o).ToString("R", CultureInfo.InvariantCulture); return true; }
             if (o is bool) { value = (bool)o ? "true" : "false"; return true; }
@@ -79,7 +121,7 @@ namespace TizenAmbilight
         {
             value = 0;
             object o;
-            if (!_values.TryGetValue(key, out o) || o == null) return false;
+            if (!TryGetRaw(key, out o)) return false;
             if (o is double) value = (double)o;
             else if (o is bool) value = (bool)o ? 1 : 0;
             else if (o is string)

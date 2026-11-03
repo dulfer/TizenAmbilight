@@ -33,7 +33,7 @@ namespace TizenAmbilight
         protected override void OnCreate()
         {
             base.OnCreate();
-            Task.Run(() => Ambilight.Run());
+            Task.Run(() => Ambilight.RunGuarded());
         }
 
         /// <summary>Framework terminate callback. Blanks the strip so it is never left latched on
@@ -74,7 +74,7 @@ namespace TizenAmbilight
         public const string AppId = "dev.ritwickverma.TizenAmbilight";
         // Bump this whenever behaviour changes. It sat at "v3" through the HDR decode, the BT.2020->709
         // gamut map and the adaptive tone curve, which made build identification useless in telemetry.
-        public const string Version = "v7";
+        public const string Version = "v8";
 
         // ---- failure handling ----
         const int FailSleepMs = 200;                     // pause after a frame-less iteration
@@ -162,18 +162,104 @@ namespace TizenAmbilight
 
         // ================================================================ entry
 
+        /// <summary>Run inside Task.Run: an exception there is swallowed by the unobserved task, so a
+        /// startup failure used to leave a live process that sent nothing and showed nothing. Report
+        /// it instead: telemetry (when configured), the log file and service-error.txt for the
+        /// settings app.</summary>
+        public static void RunGuarded()
+        {
+            var watchdog = new Thread(BootWatchdog);
+            watchdog.IsBackground = true;
+            watchdog.Start();
+            try { Run(); }
+            catch (Exception e)
+            {
+                try
+                {
+                    string stage = _bootStage;
+                    _bootStage = "failed";
+                    L("FATAL in Run (" + stage + "): " + e);
+                    try
+                    {
+                        System.IO.File.WriteAllText(ErrorPath, Version + " " + DateTime.UtcNow.ToString("o") +
+                            "\nstage: " + stage + "\n" + e.GetType().Name + ": " + e.Message + "\n" + e);
+                    }
+                    catch { }
+                    string ep = BootEndpoint();
+                    if (ep != null)
+                    {
+                        var report = new Dictionary<string, object>
+                        {
+                            { "phase", "startup_failed" }, { "version", Version },
+                            { "stage", stage }, { "error", e.ToString() },
+                            { "log_tail", StartupLog() },
+                        };
+                        Json.Post(ep + "/probe", Json.ToJson(report), 10);
+                    }
+                    FlushLog();
+                }
+                catch { }
+            }
+        }
+
+        static volatile string _bootStage = "init";
+
+        /// <summary>A startup that hangs (a native call that never returns) sends nothing at all, as
+        /// the control poll and the telemetry thread only start with the main loop. Report the stage
+        /// every 10 s until the loop is reached, so a hang names the call it is stuck in.</summary>
+        static void BootWatchdog()
+        {
+            for (int i = 1; i <= 30; i++)
+            {
+                Thread.Sleep(10000);
+                string stage = _bootStage;
+                if (stage == "main loop" || stage == "failed") return;
+                try
+                {
+                    string ep = BootEndpoint();
+                    if (ep == null) continue;
+                    var report = new Dictionary<string, object>
+                    {
+                        { "phase", "booting" }, { "version", Version }, { "stage", stage },
+                        { "seconds", (long)(i * 10) }, { "log_tail", StartupLog() },
+                    };
+                    Json.Post(ep + "/probe", Json.ToJson(report), 5);
+                }
+                catch { }
+            }
+        }
+
+        /// <summary>The telemetry endpoint even when ReadConfig never finished: falls back to the
+        /// files ConfigFile has loaded so far. Null when none is configured.</summary>
+        static string BootEndpoint()
+        {
+            string ep = _cfg != null ? _cfg.Endpoint : null;
+            string s;
+            if (string.IsNullOrEmpty(ep) && ConfigFile.TryGetString("probeEndpoint", out s)) ep = s.Trim().TrimEnd('/');
+            return string.IsNullOrEmpty(ep) ? null : ep;
+        }
+
+        static List<object> StartupLog()
+        {
+            lock (_logLock) { return new List<object>(Log.GetRange(Math.Max(0, Log.Count - 40), Math.Min(40, Log.Count))); }
+        }
+
         public static void Run()
         {
+            _bootStage = "config";
             Config cfg = ReadConfig();
             _cfg = cfg;
+            _resolved = cfg.Clone();
             CaptureFileName = cfg.CompressType == CaptureApi.CompressJpeg ? "amb.jpg" : "amb.png";
 
             L("=== " + AppId + " " + Version + " starting ===");
             L(RecordedMeasurement);
-            L("config: " + ConfigFile.Source + " (" + ConfigFile.Count + " keys)");
+            L("config: " + ConfigFile.Source + " (" + ConfigFile.Count + " keys); TV settings: " +
+              ConfigFile.UserSource + " (" + ConfigFile.UserCount + " keys)");
             if (!cfg.HasWled)
                 L("NOTE: no wledIp configured - colours are computed but nothing is sent. " +
-                  "Set wledIp (Apps2Samsung install form, or config.json when building from source).");
+                  "Set it in the TizenAmbilight Settings app on the TV (or the Apps2Samsung install form, " +
+                  "or config.json when building from source).");
             L("control channel: " + (cfg.HasControl ? cfg.ControlUrl : "(none)") +
               "   telemetry: " + (cfg.HasTelemetry ? cfg.Endpoint : "(none)"));
             L("brightness shaping: gain=" + cfg.Gain + " gamma=" + cfg.Gamma +
@@ -189,18 +275,22 @@ namespace TizenAmbilight
               OffSleepMs + " ms; probe failure => ASSUME ON (fallback)");
 
             // ---- (0) PNG decoder self-check, run on the device ----
+            _bootStage = "png self-test";
             string selfTest = PngSelfTest.Run();
             L("png decoder self-test: " + selfTest);
+            _bootStage = "platform info";
             string platformVersion;
             if (Tizen.System.Information.TryGetValue("http://tizen.org/feature/platform.version", out platformVersion))
                 PpiCapture.PlatformVersion = platformVersion;
             L("runtime: Tizen=" + PpiCapture.PlatformVersion + " pointer_bits=" + (IntPtr.Size * 8));
 
             // ---- (1) resolve the capture library ----
+            _bootStage = "capture library";
             bool usePlane = cfg.CaptureBackend == VideoPlaneCapture.BackendName;
             string vErr = null;
             if (usePlane)
             {
+                _bootStage = "video-plane library";
                 vErr = VideoPlaneCapture.Init();
                 if (vErr != null) L("VIDEO-PLANE backend NOT ready: " + vErr +
                                     " (set preference captureBackend=file to fall back)");
@@ -209,12 +299,14 @@ namespace TizenAmbilight
                        " -> " + VideoPlaneCapture.PlaneW + "x" + VideoPlaneCapture.PlaneH +
                        " NV12 in memory, NO file");
             }
+            _bootStage = "screenshot library";
             string initErr = CaptureApi.Init();
             if (initErr != null) L("capture library NOT ready: " + initErr);
             else L("capture library ready: " + CaptureApi.ResolvedPath + " @ 0x" +
                    CaptureApi.FunctionPointer.ToInt64().ToString("x"));
 
             // ---- (2) writable directory discovery ----
+            _bootStage = "directory discovery";
             string captureDir = null;
             Dictionary<string, object> discovery = null;
             var dirChecks = new List<object>();
@@ -258,11 +350,14 @@ namespace TizenAmbilight
                 L("selected capture library unavailable; keeping control and telemetry available");
             }
 
+            _bootStage = "startup report";
             // ---- (3) the one-off startup POST: decoder verdict + directory discovery ----
             Post(cfg, BuildReport(cfg, selfTest, backendErr, captureDir, discovery,
                                  backendErr == null ? "started" : "no_library", stats));
 
             // ---- (4) the real loop ----
+            _bootStage = "main loop";
+            try { System.IO.File.Delete(ErrorPath); } catch { }
             MainLoop(cfg, selfTest, captureDir, discovery, stats);
         }
 
@@ -308,6 +403,15 @@ namespace TizenAmbilight
             {
                 try
                 {
+                    // ---- settings changed in the on-TV settings app: apply live, no restart ----
+                    if (Interlocked.Exchange(ref _settingsDirty, 0) == 1)
+                    {
+                        List<string> changed = ApplyUserSettings(cfg);
+                        if (changed.Count > 0)
+                            L("TV settings applied: " + string.Join(", ", changed.ToArray()) + " (" + ConfigFile.UserSource + ")");
+                    }
+                    MaybeWriteStatus(cfg, st);
+
                     // ---- 0. power-state gate (top of loop) ----
                     // The decision is CACHED for PowerPollCacheMs so the loop is not HTTP-polling the
                     // local API every iteration. The probe sits OUTSIDE the frame's Stopwatch region
@@ -401,6 +505,19 @@ namespace TizenAmbilight
                             Thread.Sleep(1000);
                             continue;
                         }
+                    }
+
+                    // ---- LED layout page of the settings app is open: edge colour test, no capture ----
+                    // Sent from here rather than from the frame path, because with the settings app in
+                    // the foreground there is usually no video to capture and the frame path never
+                    // reaches its send.
+                    if (_uiHeartbeat == UserSettings.HeartbeatTest && cfg.HasWled)
+                    {
+                        SendTestPattern(cfg, st);
+                        st.LastStatus = "LED test pattern (settings app)";
+                        MaybePost(cfg, captureDir, layout, smoothed, st);
+                        Thread.Sleep(100);
+                        continue;
                     }
 
                     var fsw = Stopwatch.StartNew();
@@ -518,7 +635,7 @@ namespace TizenAmbilight
                             lastMeterUtc = nowP;
                             st.FrameBytes = (long)(cfg.ZoneCount * 3);
                             st.LastFileBytes = -1;
-                            if (layout == null || layout.Total != cfg.ZoneCount)
+                            if (layout == null || layout.Total != cfg.ZoneCount || layout.IsStale)
                             {
                                 // Same zone layout (and therefore the same zone order and LED mapping) the
                                 // plane uses: built at the plane's aspect, so a plane frame arriving later
@@ -617,7 +734,7 @@ namespace TizenAmbilight
                         // Zone colours straight from the planes. No RGBA frame is ever materialised:
                         // the YUV average and the colour matrix now happen once per ZONE, not once
                         // per pixel.
-                        if (layout == null || layout.Total != cfg.ZoneCount || st.LastDims != dims)
+                        if (layout == null || layout.Total != cfg.ZoneCount || layout.IsStale || st.LastDims != dims)
                         {
                             layout = new ZoneLayout(vr.W, vr.H, cfg.ZoneCount, cfg.BandFrac);
                             smoothed = null;
@@ -802,7 +919,7 @@ namespace TizenAmbilight
 
                     // ---- 3. zone colours from the real image ----
                     dims = img.Width + "x" + img.Height;
-                    if (layout == null || layout.Total != cfg.ZoneCount || st.LastDims != dims)
+                    if (layout == null || layout.Total != cfg.ZoneCount || layout.IsStale || st.LastDims != dims)
                     {
                         layout = new ZoneLayout(img.Width, img.Height, cfg.ZoneCount, cfg.BandFrac);
                         smoothed = null;
@@ -895,23 +1012,7 @@ namespace TizenAmbilight
                     {
                         ZoneColors toSend = shaped;
                         if (cfg.TestPattern && layout != null)
-                        {
-                            // 4-edge colour test, built in OUR zone order so the mapping is visible:
-                            // top=red, right=green, bottom=blue, left=yellow
-                            var tp = new ZoneColors(layout.Total);
-                            int k0 = 0;
-                            for (int e = 0; e < 4; e++)
-                            {
-                                int cnt = (e == 0) ? layout.TopCount : (e == 1) ? layout.RightCount
-                                        : (e == 2) ? layout.BottomCount : layout.LeftCount;
-                                byte r = (byte)(e == 0 ? 255 : (e == 2 ? 0 : (e == 3 ? 255 : 0)));
-                                byte g = (byte)(e == 1 ? 255 : (e == 3 ? 255 : 0));
-                                byte b = (byte)(e == 2 ? 255 : 0);
-                                for (int q = 0; q < cnt && k0 < layout.Total; q++, k0++)
-                                { tp.R[k0] = r; tp.G[k0] = g; tp.B[k0] = b; }
-                            }
-                            toSend = tp;
-                        }
+                            toSend = layout.TestPattern();   // built in OUR zone order so the mapping is visible
                         // WQUANTISED so the WLED LUT - cached on the exact gamma - is rebuilt only when
                         // the value actually moves rather than on every frame of the glide.
                         double effGamma = cfg.AdaptiveGamma

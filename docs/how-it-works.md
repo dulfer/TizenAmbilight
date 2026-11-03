@@ -36,6 +36,7 @@ See [S95B setup](../README.md#s95b-setup-build-v7).
 - [S95B compatibility and API discovery](#s95b-compatibility-and-api-discovery)
 - [Output](#output)
 - [Liveness, standby and safety](#liveness-standby-and-safety)
+- [Settings app](#settings-app)
 - [How this differs from other Tizen ambilights](#how-this-differs-from-other-tizen-ambilights)
 
 ---
@@ -372,6 +373,41 @@ WLED then reverts to its own stored colour, which is how an ambilight ends up gl
 * **Crashes.** A per-frame try/catch and a global unhandled-exception handler black out the strip and
   flush the log instead of dying mid-packet. There is no auto-restart: `auto-restart` is off in the
   manifest.
+
+---
+
+## Settings app
+
+The settings app is a separate package: a NUI UI app (`dev.ritwickverma.AmbilightSettings`, project
+`TizenAmbilight.Settings/`) next to the headless service (`dev.ritwickverma.TizenAmbilight`). Both
+were first shipped in one TPK, but on the S95B (Tizen 6.5) updating a package that holds a service app
+and a UI app leaves the service stuck in the .NET launcher: its `Main` never runs, and only installing
+a single-app package recovers it. Two single-app packages update cleanly.
+
+The two packages talk only through files in the service package's `shared/trusted` directory
+(`apps_rw/dev.ritwickverma.TizenAmbilight/shared/trusted/`). Tizen lets every package signed with the
+same author certificate read and write it; Apps2Samsung signs both with the user's certificate. The
+settings app finds the directory through `ApplicationManager` (`SharedTrustedPath` of the service).
+There is no socket and no listener. On first start the service copies an older `settings.json` from
+its `data/` directory there, so values saved by the single-package build are kept.
+
+| file | written by | purpose |
+|---|---|---|
+| `settings.json` | settings app, on every change | the user layer above `config.json`; flat JSON, written atomically (temp file, flush, replace) |
+| `ui-active` | settings app, every 2 s while open | heartbeat: `open`, or `test` while the edge colour test is on. Older than 6 s counts as closed, so a killed app cannot leave the test pattern on. |
+| `status.json` | service, every 2 s, only while the heartbeat is fresh | state shown in the app (running, power, send rate, errors) |
+| `defaults.json` | service, at startup when it changed | copy of the bundled `res/config.json`, which the settings package cannot read; the app shows these values for settings that are not in `settings.json` |
+| `service-error.txt` | service, when startup fails | the exception and the startup stage; the app shows it as the service status. Deleted when the main loop starts. |
+
+The service's I/O thread checks the modification time and size of `settings.json` once per second. On a
+change, the main loop re-resolves the whole configuration and copies **only the fields that changed**
+into the running config. A value set with a live control token therefore stays, unless the same
+setting changes in the file. Zone-count and edge-count changes rebuild the zone layout (and the DRM
+sampler's spot layout) on the next frame. While the heartbeat says `test`, the loop skips capture and
+sends the edge colour test at 10 Hz, because the settings screen covers the picture anyway.
+
+The status file is written only while the app is open, so the service does not wear the TV's flash in
+normal use.
 
 ---
 

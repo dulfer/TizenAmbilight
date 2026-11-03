@@ -34,7 +34,7 @@ namespace TizenAmbilight
         /// <summary>Init the sampler on first need; after a failure retry at most every 30 s.</summary>
         static bool EnsurePpi(Config cfg)
         {
-            if (PpiCapture.Ready && PpiCapture.ZoneTotal == cfg.ZoneCount) return true;
+            if (PpiCapture.Ready && PpiCapture.ZoneTotal == cfg.ZoneCount && !PpiCapture.LayoutStale) return true;
             if (_ppiInitTryUtc != DateTime.MinValue && PpiCapture.InitError != null &&
                 (DateTime.UtcNow - _ppiInitTryUtc).TotalSeconds < 30) return false;
             _ppiInitTryUtc = DateTime.UtcNow;

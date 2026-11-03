@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest package="dev.ritwickverma.AmbilightSettings" version="1.0.0" api-version="6.5" xmlns="http://tizen.org/ns/packages">
+    <author>Ritwick Verma</author>
+    <profile name="tv" />
+    <ui-application appid="dev.ritwickverma.AmbilightSettings" exec="TizenAmbilightSettings.dll" multiple="false" nodisplay="false" taskmanage="true" api-version="9" type="dotnet-nui" launch_mode="single">
+        <label>Ambilight Settings</label>
+        <icon>TizenAmbilight.png</icon>
+        <splash-screens />
+    </ui-application>
+    <shortcut-list />
+    <privileges>
+        <privilege>http://tizen.org/privilege/appmanager.launch</privilege>
+    </privileges>
+    <dependencies />
+    <provides-appdefined-privileges />
+</manifest>

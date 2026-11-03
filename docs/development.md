@@ -28,6 +28,17 @@ dotnet msbuild TizenAmbilight/TizenAmbilight.csproj -restore -t:Rebuild -p:Confi
 ```
 
 The output is `TizenAmbilight/bin/Release/tizen90/dev.ritwickverma.TizenAmbilight-<version>.tpk`.
+The on-TV **Ambilight Settings** app is a second, separate package. Build it the same way:
+
+```bash
+dotnet msbuild TizenAmbilight.Settings/TizenAmbilight.Settings.csproj -restore -t:Rebuild -p:Configuration=Release
+```
+
+Output: `TizenAmbilight.Settings/bin/Release/tizen90/dev.ritwickverma.AmbilightSettings-<version>.tpk`.
+Do not merge it back into the service TPK: on the S95B an update of a package with both apps leaves the
+service unable to start (see [How it works, Settings app](how-it-works.md#settings-app)). Sign both
+packages with the same author certificate, or the settings app cannot reach the service's
+`shared/trusted` directory.
 The build logs `is signed with Default Certificates!`. A retail TV rejects that signature, so the
 package has to be re-signed for your TV (next section).
 
@@ -165,7 +176,10 @@ dotnet run --project decoder-selftest/DecoderSelfTest.csproj     # ends "PASSED 
   extraction are covered as well.
 * `RgbMeasureApi` discovery covers legacy `cs_ve`, middle-generation `ve` and newer `ppi_ve`
   exports, family preference, missing/partial families and invalid sampler conditions.
-  At build v7 the harness reports **88 passed, 0 failed**.
+* The TV settings layer: `settings.json` precedence over `config.json`, atomic write and read-back,
+  IPv4 validation, heartbeat freshness, per-edge LED counts, the edge colour test, and the settings
+  app's model (`SettingsModel.cs`: defaults, clamping, units, persistence across restarts, reset).
+  At build v8 the harness reports **122 passed, 0 failed**.
 
 The test data is generated, then checked in. To regenerate it (the JPEG cases need Pillow):
 
@@ -176,7 +190,8 @@ cd decoder-selftest && python3 gen_testdata.py && python3 gen_jpeg_testdata.py
 A new shared source file must be added to `DecoderSelfTest.csproj` with `<Compile Include=...>`, or the
 harness will not see it. The Tizen and P/Invoke layer (`VideoPlaneCapture` capture calls, `CaptureApi`,
 `PpiCapture` native calls, `Preference`) cannot run off the TV and is not unit-tested. Linking
-`PpiCapture.cs` into the harness checks compilation, not native hardware behaviour.
+`PpiCapture.cs` into the harness checks compilation, not native hardware behaviour. The NUI screens of
+the settings app (`TizenAmbilight.Settings/src/SettingsApp.cs`, `Ui.cs`) need a TV or the emulator.
 On the device, `PngSelfTest.cs` checks the
 PNG decoder at every start and reports PASS/FAIL in the startup telemetry.
 
@@ -237,6 +252,9 @@ restricted on the tested S95B; empty output must not be interpreted as a success
 | `TizenAmbilight/src/WledOutput.cs` | DRGB packet building, mapping, tone LUT, UDP send |
 | `TizenAmbilight/src/PowerState.cs` | TV local-API power probe |
 | `TizenAmbilight/src/PngDecoder.cs`, `JpegDecoder.cs`, `Json.cs`, `PngSelfTest.cs` | first-party codecs and checks |
+| `TizenAmbilight/src/UserSettings.cs` | `settings.json`, heartbeat and status files shared with the settings app |
+| `TizenAmbilight/src/SettingsLink.cs` | service side of the settings app: edge colour test, `status.json` |
+| `TizenAmbilight.Settings/` | on-TV settings app (NUI): `SettingsModel.cs` (menu, values, persistence), `Ui.cs` (rows, popups), `SettingsApp.cs` (screen, keys, service link) |
 | `decoder-selftest/` | host test harness and its generated test data |
 | `tools/` | control server, telemetry collector, secret scanner, catalog-entry check |
 | `packaging/apps2samsung/` | the tizen-community-packages catalog entry |
@@ -247,17 +265,21 @@ comments that record *why* (several document past bugs and must stay accurate). 
 
 ## Releasing
 
-1. Update `CHANGELOG.md` and bump `version` in `TizenAmbilight/tizen-manifest.xml`.
+1. Update `CHANGELOG.md` and bump `version` in `TizenAmbilight/tizen-manifest.xml` **and**
+   `TizenAmbilight.Settings/tizen-manifest.xml` (released together; the release workflow checks they match).
 2. Merge to `master`. CI (`.gitlab-ci.yml`, mirrored as `.github/workflows/ci.yml`) runs the checks,
    the harness and a Release build.
 3. Tag `vX.Y.Z` (it must equal the manifest version) and push the tag. The GitLab project push-mirrors
    to GitHub, where `.github/workflows/release.yml` builds the TPK and publishes a GitHub Release with
-   the `.tpk` and `SHA256SUMS`. That release is what Apps2Samsung installs.
+   both TPKs (`TizenAmbilight-vX.Y.Z-default-cert.tpk`, `TizenAmbilightSettings-vX.Y.Z-default-cert.tpk`)
+   and `SHA256SUMS`. That release is what Apps2Samsung installs.
 
 The catalog entry in `packaging/apps2samsung/` patches `res/config.json` from the installer's form, by
 exact find/replace on lines of `config.example.json`. `tools/check-apps2samsung.py` (run in CI) fails if
 the two drift apart. The entry is listed in
 [tizen-community-packages](https://github.com/Apps2Samsung/tizen-community-packages)
-(`packages/RitwickVerma__TizenAmbilight.json`, merged in PR #132). A new release needs no catalog change:
+(`packages/RitwickVerma__TizenAmbilight.json`, merged in PR #132). The Settings app has its own entry, `packaging/apps2samsung/RitwickVerma__TizenAmbilightSettings.json`
+(it still has to be submitted to that catalog); the two entries' asset patterns
+(`^TizenAmbilight-` and `^TizenAmbilightSettings-`) must not overlap. A new release needs no catalog change:
 Apps2Samsung picks up the latest GitHub Release. A change to the entry itself (new form field, new
 label) needs a pull request there as well as here, and the two copies must stay identical.

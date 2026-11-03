@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using TizenAmbilight;
+using TizenAmbilight.Settings;
 
 namespace DecoderSelfTest
 {
@@ -565,6 +566,132 @@ namespace DecoderSelfTest
                       !RgbMeasureApi.ValidCondition(2, 3840, 16, 3840, 2160) &&
                       !RgbMeasureApi.ValidCondition(2, 16, 16, int.MaxValue, 2160),
                       "invalid sampler conditions rejected before position calls", "");
+            }
+            Console.WriteLine();
+            Console.WriteLine("[14] TV settings layer (settings.json) and the settings app model");
+            {
+                string sv; double dv;
+                ConfigFile.Set(ConfigFile.Parse("{ \"wledIp\": \"10.0.0.5\", \"ledCount\": 60 }"));
+                ConfigFile.SetUser(ConfigFile.Parse("{ \"wledIp\": \"10.0.0.7\" }"));
+                Check(ConfigFile.TryGetString("wledIp", out sv) && sv == "10.0.0.7", "settings.json overrides config.json", sv);
+                Check(ConfigFile.TryGetDouble("ledCount", out dv) && dv == 60, "keys not in settings.json fall through", dv.ToString());
+                ConfigFile.SetUser(null);
+                Check(ConfigFile.TryGetString("wledIp", out sv) && sv == "10.0.0.5", "empty user layer restores config.json", sv);
+
+                string tmp = Path.Combine(Path.GetTempPath(), "amb-settings-" + Guid.NewGuid().ToString("N"));
+                string data = Path.Combine(tmp, "data"), res = Path.Combine(tmp, "res");
+                Directory.CreateDirectory(data);
+                Directory.CreateDirectory(res);
+                try
+                {
+                    string us = Path.Combine(data, UserSettings.FileName);
+                    ConfigFile.LoadUser(us);
+                    Check(ConfigFile.UserSource == "none" && ConfigFile.UserCount == 0, "missing settings.json is empty, no error", ConfigFile.UserSource);
+                    File.WriteAllText(us, "{ \"gamma\": ");
+                    ConfigFile.LoadUser(us);
+                    Check(ConfigFile.UserSource.StartsWith("error:") && ConfigFile.UserCount == 0,
+                          "malformed settings.json is ignored as a whole", ConfigFile.UserSource);
+
+                    var vals = new Dictionary<string, object> { { "wledIp", "192.168.1.50" }, { "alpha", 0.3 }, { "bars", 1.0 } };
+                    UserSettings.Write(us, vals);
+                    var back = UserSettings.Read(us);
+                    Check(back.Count == 3 && (string)back["wledIp"] == "192.168.1.50" && (double)back["alpha"] == 0.3,
+                          "settings.json write/read round trip", File.ReadAllText(us).Replace("\n", " "));
+                    string ser = UserSettings.Serialize(vals);
+                    Check(ser.IndexOf("alpha") < ser.IndexOf("bars") && ser.IndexOf("bars") < ser.IndexOf("wledIp"),
+                          "keys written in sorted order", "");
+                    Check(!File.Exists(us + ".tmp"), "atomic write leaves no temp file", "");
+
+                    Check(UserSettings.IsIPv4("192.168.1.50") && UserSettings.IsIPv4("10.0.0.255"), "IPv4 accepted", "");
+                    Check(!UserSettings.IsIPv4("256.1.1.1") && !UserSettings.IsIPv4("1.2.3") && !UserSettings.IsIPv4("01.2.3.4") &&
+                          !UserSettings.IsIPv4("wled.local") && !UserSettings.IsIPv4("1.2.3.4 ") && !UserSettings.IsIPv4(""),
+                          "malformed IPv4 refused", "");
+
+                    string hb = Path.Combine(data, UserSettings.HeartbeatFileName);
+                    Check(UserSettings.ReadHeartbeat(hb, DateTime.UtcNow) == null, "no heartbeat file = settings app closed", "");
+                    UserSettings.WriteText(hb, UserSettings.HeartbeatTest);
+                    Check(UserSettings.ReadHeartbeat(hb, DateTime.UtcNow) == UserSettings.HeartbeatTest, "fresh heartbeat read", "");
+                    Check(UserSettings.ReadHeartbeat(hb, DateTime.UtcNow.AddMilliseconds(UserSettings.HeartbeatFreshMs + 1000)) == null,
+                          "stale heartbeat ignored (app killed without cleanup)", "");
+
+                    ZoneLayout.EdgeOverride = null;
+                    var before = new ZoneLayout(960, 540, 40, 0.08);
+                    Check(!before.IsStale, "new layout is current", "");
+                    ZoneLayout.EdgeOverride = new[] { 12, 8, 12, 8 };
+                    Check(before.IsStale, "edge override change marks cached layouts stale", "");
+                    var ov = new ZoneLayout(960, 540, 40, 0.08);
+                    Check(ov.TopCount == 12 && ov.RightCount == 8 && ov.BottomCount == 12 && ov.LeftCount == 8 && !ov.IsStale,
+                          "edge override applied when it sums to the total", ov.Describe());
+                    var mism = new ZoneLayout(960, 540, 73, 0.08);
+                    Check(mism.TopCount == 23 && mism.LeftCount == 13, "override ignored when the total differs", mism.Describe());
+                    var tp = ov.TestPattern();
+                    Check(tp.R[0] == 255 && tp.G[0] == 0 && tp.G[12] == 255 && tp.R[12] == 0 && tp.B[20] == 255 &&
+                          tp.R[39] == 255 && tp.G[39] == 255 && tp.B[39] == 0,
+                          "test pattern: top red, right green, bottom blue, left yellow", "");
+                    ZoneLayout.EdgeOverride = new[] { 0, 8, 12, 8 };
+                    Check(ZoneLayout.EdgeOverride == null, "an edge below 1 disables the override", "");
+                    ZoneLayout.EdgeOverride = null;
+
+                    File.Delete(us);
+                    File.WriteAllText(Path.Combine(res, "config.json"), "{ \"wledIp\": \"10.0.0.9\", \"gamma\": 2.0 }");
+                    var m = new SettingsModel(data, Path.Combine(res, "config.json"));
+                    var ip = m.Find("wledIp"); var gamma = m.Find("gamma"); var stale = m.Find("staleMs");
+                    var leds = m.Find("ledCount"); var top = m.Find("ledsTop"); var test = m.Find(SettingsModel.TestKey);
+                    Check(SettingsModel.MaxLeds == WledOutput.MaxDrgbLeds, "settings app LED cap equals the DRGB cap", "");
+                    Check(m.GetString(ip) == "10.0.0.9" && m.GetNumber(gamma) == 2.0, "settings app shows config.json values", "");
+                    Check(m.GetNumber(stale) == 6 && m.Format(stale) == "6 s", "defaults shown in display units", m.Format(stale));
+                    Check(m.Format(leds) == "Auto (73)" && m.Format(top) == "Auto (23)", "Auto labels show the effective counts",
+                          m.Format(leds) + " / " + m.Format(top));
+                    Check(m.Clamp(gamma, 1.333) == 1.35 && m.Clamp(gamma, 9) == 4 && m.Clamp(gamma, double.NaN) == 1.5,
+                          "values snap to step and range", "");
+                    Check(!m.SetString(ip, "999.1.1.1") && !File.Exists(us), "invalid IP refused and not stored", "");
+                    Check(m.SetString(ip, "10.0.0.20") && File.Exists(us), "a change is saved immediately", "");
+                    Check(m.SetNumber(stale, 3) && (double)UserSettings.Read(us)["staleMs"] == 3000, "scaled value stored in service units", "");
+                    Check(m.SetToggle(test, true) && m.GetToggle(test) && !UserSettings.Read(us).ContainsKey(SettingsModel.TestKey),
+                          "edge colour test turns on and is never persisted", "");
+                    bool togglesOk = true; string bad = "";
+                    foreach (var c in m.Categories)
+                        foreach (var it in c.Items)
+                        {
+                            if (it.Kind != ItemKind.Toggle) continue;
+                            bool was = m.GetToggle(it);
+                            m.SetToggle(it, false); bool off = !m.GetToggle(it);
+                            m.SetToggle(it, true); bool on = m.GetToggle(it);
+                            m.SetToggle(it, was);
+                            if (!off || !on) { togglesOk = false; bad += it.Key + " "; }
+                        }
+                    Check(togglesOk, "every toggle switches both off and on", bad);
+                    var hdrBack = UserSettings.Read(us);
+                    Check(hdrBack.ContainsKey("hdr") && (double)hdrBack["hdr"] == 1, "toggle on is stored as 1", "");
+                    m.SetNumber(m.Find("ledsTop"), 20); m.SetNumber(m.Find("ledsRight"), 10);
+                    m.SetNumber(m.Find("ledsBottom"), 20); m.SetNumber(m.Find("ledsLeft"), 10);
+                    Check(m.ZoneTotal() == 60 && m.Format(leds) == "Auto (60)" && m.MaxOf(m.Find("mapOffset")) == 59,
+                          "explicit edges set the zone total", m.ZoneTotal().ToString());
+
+                    var again = new SettingsModel(data, Path.Combine(res, "config.json"));
+                    Check(again.GetString(ip) == "10.0.0.20" && again.GetNumber(stale) == 3 && again.ZoneTotal() == 60 &&
+                          !again.GetToggle(again.Find(SettingsModel.TestKey)),
+                          "values survive an app restart", "");
+                    ConfigFile.LoadUser(us);
+                    Check(ConfigFile.TryGetString("wledIp", out sv) && sv == "10.0.0.20", "service reads what the app saved", sv);
+                    Check(again.Reset() && !File.Exists(us) && again.GetString(ip) == "10.0.0.9" && again.ZoneTotal() == 73,
+                          "reset returns to config.json", again.GetString(ip));
+                    var status = again.Find("_status");
+                    again.ServiceError = "NullReferenceException: boom (during capture library)";
+                    Check(status.Info(again).Contains("failed to start") && status.Info(again).Contains("boom"),
+                          "a service startup error is shown while the service is not reporting", status.Info(again));
+                    again.ServiceError = null;
+                    Check(!status.Info(again).Contains("failed"), "no error text without an error file", status.Info(again));
+                    var nodef = new SettingsModel(data, Path.Combine(data, UserSettings.DefaultsFileName));
+                    Check(nodef.GetString(nodef.Find("wledIp")) == "" && nodef.GetNumber(nodef.Find("gamma")) == 1.5,
+                          "no defaults.json yet (service never ran): built-in defaults", nodef.GetString(nodef.Find("wledIp")));
+                }
+                finally
+                {
+                    ConfigFile.SetUser(null);
+                    ZoneLayout.EdgeOverride = null;
+                    try { Directory.Delete(tmp, true); } catch { }
+                }
             }
             Console.WriteLine("==================================================");
             Console.WriteLine("PASSED " + _pass + "   FAILED " + _fail);

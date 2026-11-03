@@ -71,11 +71,16 @@ namespace TizenAmbilight
             public int MapOffset;
             public bool MapReverse;
             public int LedCount;        // physical LEDs to drive; LEDs past ZoneCount are sent black
+            // explicit zones per edge (walk order); all 0 = proportional split (see ZoneLayout.EdgeOverride)
+            public int EdgeTop, EdgeRight, EdgeBottom, EdgeLeft;
+            public int PpiZones;
             public bool TestPattern;    // send the 4-edge colour test instead of the ambilight
             public int CompressType;
             public int JpegQuality;
 
             public bool HasWled { get { return !string.IsNullOrEmpty(WledIp); } }
+
+            public Config Clone() { return (Config)MemberwiseClone(); }
             public bool HasTelemetry { get { return !string.IsNullOrEmpty(Endpoint); } }
             public bool HasControl { get { return !string.IsNullOrEmpty(ControlUrl); } }
 
@@ -87,6 +92,10 @@ namespace TizenAmbilight
                     { "output_enabled", OutputEnabled },
                     { "zone_count", (long)ZoneCount },
                     { "led_count", (long)LedCount },
+                    { "user_settings_source", ConfigFile.UserSource },
+                    { "settings_dir", LinkDir },
+                    { "settings_app", _uiHeartbeat ?? "closed" },
+                    { "edge_counts", EdgeTop + "," + EdgeRight + "," + EdgeBottom + "," + EdgeLeft },
                     { "smoothing_alpha", Alpha },
                     { "border_band_frac", BandFrac },
                     { "wled_ip", WledIp },
@@ -105,7 +114,8 @@ namespace TizenAmbilight
             }
         }
 
-        // ---- setting lookup: Tizen Preference (if the app ever set one) > config.json > default ----
+        // ---- setting lookup: Tizen Preference (if the app ever set one) > settings.json (on-TV
+        //      settings app) > config.json > default ----
 
         static bool PrefBool(string key, bool dflt)
         {
@@ -173,6 +183,120 @@ namespace TizenAmbilight
             ConfigFile.Load(
                 string.IsNullOrEmpty(resDir) ? null : System.IO.Path.Combine(resDir, "config.json"),
                 System.IO.Path.Combine(binDir, "..", "res", "config.json"));
+            PublishDefaults(resDir, binDir);
+            ConfigFile.LoadUser(UserSettingsPath);
+        }
+
+        static bool _defaultsPublished;
+        /// <summary>The settings app is its own package and cannot read this package's res/, so copy the
+        /// bundled config.json next to settings.json as defaults.json (the values Reset returns to).
+        /// Once per process, and only when the content differs, so flash is not rewritten each boot.</summary>
+        static void PublishDefaults(string resDir, string binDir)
+        {
+            if (_defaultsPublished) return;
+            _defaultsPublished = true;
+            try
+            {
+                string src = string.IsNullOrEmpty(resDir) ? null : System.IO.Path.Combine(resDir, "config.json");
+                if (src == null || !System.IO.File.Exists(src)) src = System.IO.Path.Combine(binDir, "..", "res", "config.json");
+                if (!System.IO.File.Exists(src)) return;
+                string dst = System.IO.Path.Combine(LinkDir, UserSettings.DefaultsFileName);
+                string body = System.IO.File.ReadAllText(src);
+                if (System.IO.File.Exists(dst) && System.IO.File.ReadAllText(dst) == body) return;
+                UserSettings.WriteText(dst, body);
+            }
+            catch (Exception e) { L("defaults.json publish failed: " + e.GetType().Name + ": " + e.Message); }
+        }
+
+        static string _dataDir;
+        /// <summary>This package's private data directory (fallback for <see cref="LinkDir"/>).</summary>
+        static string DataDir
+        {
+            get
+            {
+                if (_dataDir != null) return _dataDir;
+                string d = null;
+                try { d = Application.Current?.DirectoryInfo?.Data; } catch { }
+                if (string.IsNullOrEmpty(d))
+                    d = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory ?? "", "..", "data");
+                _dataDir = d;
+                return d;
+            }
+        }
+        static string _linkDir;
+        /// <summary>Where the files shared with the settings app live: this package's shared/trusted
+        /// directory, which Tizen opens to packages signed with the same author certificate. The
+        /// settings app is a separate package because a package holding both apps left this service
+        /// unable to start after every update on the reference TV (only a fresh install recovered it).
+        /// Falls back to the private data directory when shared/trusted is unavailable. The first
+        /// time it is resolved, a settings.json left in data/ by the earlier one-package build is
+        /// moved over so the user's values survive the change.</summary>
+        static string LinkDir
+        {
+            get
+            {
+                if (_linkDir != null) return _linkDir;
+                string d = null;
+                try { d = Application.Current?.DirectoryInfo?.SharedTrusted; } catch { }
+                if (string.IsNullOrEmpty(d) || !System.IO.Directory.Exists(d)) d = DataDir;
+                else
+                {
+                    try
+                    {
+                        string oldPath = System.IO.Path.Combine(DataDir, UserSettings.FileName);
+                        string newPath = System.IO.Path.Combine(d, UserSettings.FileName);
+                        // copy, not move: a renamed file keeps its private-data label, which the
+                        // settings package could not read; a new file takes the shared one
+                        if (System.IO.File.Exists(oldPath) && !System.IO.File.Exists(newPath))
+                        {
+                            System.IO.File.WriteAllBytes(newPath, System.IO.File.ReadAllBytes(oldPath));
+                            System.IO.File.Delete(oldPath);
+                        }
+                        foreach (string f in new[] { UserSettings.HeartbeatFileName, UserSettings.StatusFileName, UserSettings.ErrorFileName })
+                            System.IO.File.Delete(System.IO.Path.Combine(DataDir, f));
+                    }
+                    catch { }
+                }
+                _linkDir = d;
+                return d;
+            }
+        }
+        static string UserSettingsPath { get { return System.IO.Path.Combine(LinkDir, UserSettings.FileName); } }
+        static string HeartbeatPath { get { return System.IO.Path.Combine(LinkDir, UserSettings.HeartbeatFileName); } }
+        static string ErrorPath { get { return System.IO.Path.Combine(LinkDir, UserSettings.ErrorFileName); } }
+        static string StatusPath { get { return System.IO.Path.Combine(LinkDir, UserSettings.StatusFileName); } }
+
+        /// <summary>The values last resolved from the files, so a reload can tell which ones the user
+        /// actually changed. Only those are copied onto the live config: a value tuned through the
+        /// control channel stays as it is unless the same setting was changed on the TV.</summary>
+        static Config _resolved;
+
+        /// <summary>Re-read settings.json (and config.json) and apply what changed, live. Returns the
+        /// changed field names, empty when nothing changed. Render-loop thread only.</summary>
+        static List<string> ApplyUserSettings(Config cfg)
+        {
+            // ReadConfig also writes these statics; keep their live values unless the file changed them
+            double peak = VideoPlaneCapture.HdrPeakNits;
+            int settle = PpiCapture.SleepOverrideMs;
+            int pz = PpiCapture.PzRequested;
+            Config prev = _resolved;
+            Config next = ReadConfig();
+            _resolved = next;
+            var changed = new List<string>();
+            if (prev == null) return changed;
+            VideoPlaneCapture.HdrPeakNits = peak;
+            PpiCapture.SleepOverrideMs = settle;
+            if (prev.PpiZones == next.PpiZones) PpiCapture.PzRequested = pz;
+            foreach (var f in typeof(Config).GetFields())
+            {
+                object a = f.GetValue(prev), b = f.GetValue(next);
+                if (Equals(a, b)) continue;
+                f.SetValue(cfg, b);
+                changed.Add(f.Name);
+            }
+            cfg.MapOffset = ((cfg.MapOffset % cfg.ZoneCount) + cfg.ZoneCount) % cfg.ZoneCount;
+            if (cfg.AlphaFast < cfg.Alpha) cfg.AlphaFast = cfg.Alpha;
+            return changed;
         }
 
         static Config ReadConfig()
@@ -186,6 +310,18 @@ namespace TizenAmbilight
             // ---- strip size. Set ledCount to the strip's LED count; zones follow it unless set. ----
             // zoneCount < ledCount leaves the extra LEDs black (e.g. LEDs hidden behind a stand).
             int leds = PrefInt("ledCount", 0), zones = PrefInt("zoneCount", 0);
+            // Per-edge counts (ledsTop/Right/Bottom/Left) describe the strip exactly; when all four are
+            // set they fix the zone total, and ledCount defaults to it.
+            int eT = PrefInt("ledsTop", 0), eR = PrefInt("ledsRight", 0), eB = PrefInt("ledsBottom", 0), eL = PrefInt("ledsLeft", 0);
+            bool edges = eT >= 1 && eR >= 1 && eB >= 1 && eL >= 1 &&
+                         (long)eT + eR + eB + eL <= WledOutput.MaxDrgbLeds;
+            if (edges)
+            {
+                zones = eT + eR + eB + eL;
+                c.EdgeTop = eT; c.EdgeRight = eR; c.EdgeBottom = eB; c.EdgeLeft = eL;
+                if (leds > 0 && leds < zones) leds = zones;
+            }
+            ZoneLayout.EdgeOverride = edges ? new[] { eT, eR, eB, eL } : null;
             if (leds <= 0 && zones <= 0) { leds = DefaultZoneCount; zones = DefaultZoneCount; }
             else if (zones <= 0) zones = leds;
             else if (leds <= 0) leds = zones;
@@ -326,7 +462,8 @@ namespace TizenAmbilight
             // ppi_ve fallback tunables (only used while the plane is DRM-withheld, or with captureBackend "ppi").
             // pz: positions measured round the ring. More = finer picture, slower per-zone refresh.
             // ppiSettleMs: -1 = the settle time the TV reports (default); >=0 overrides it.
-            PpiCapture.PzRequested = Math.Max(4, Math.Min(73, PrefInt("ppiZones", 24)));
+            c.PpiZones = Math.Max(4, Math.Min(73, PrefInt("ppiZones", 24)));
+            PpiCapture.PzRequested = c.PpiZones;
             PpiCapture.SleepOverrideMs = Math.Max(-1, Math.Min(200, PrefInt("ppiSettleMs", -1)));
             c.RequestWidth = PrefInt("requestWidth", CaptureApi.RequestWidth);
             if (c.RequestWidth < 16) c.RequestWidth = 16;

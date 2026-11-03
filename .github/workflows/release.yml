@@ -1,7 +1,7 @@
 name: release
 
 # Push a tag vX.Y.Z (matching the manifest version) to publish a GitHub Release
-# with the TPK attached. The TPK is signed with the Tizen SDK's DEFAULT certificate,
+# with both TPKs attached (service, and the separate Settings app package). The TPK is signed with the Tizen SDK's DEFAULT certificate,
 # which a retail TV rejects, and it is NOT installable as-is. Samsung TVs only accept a
 # package signed with a certificate that embeds that TV's DUID, so a pre-signed release
 # cannot exist. Apps2Samsung downloads this file and re-signs it for each user's own TV;
@@ -29,16 +29,23 @@ jobs:
             echo "tag $GITHUB_REF_NAME does not match manifest version $manifest" >&2
             exit 1
           fi
+          settings=$(sed -n 's/.*<manifest[^>]* version="\([^"]*\)".*/\1/p' TizenAmbilight.Settings/tizen-manifest.xml)
+          if [ "$settings" != "$manifest" ]; then
+            echo "TizenAmbilight.Settings manifest version $settings does not match $manifest" >&2
+            exit 1
+          fi
       - name: Checks
         run: |
           python3 tools/check-secrets.py --all
           python3 tools/check-apps2samsung.py
           dotnet run --project decoder-selftest/DecoderSelfTest.csproj
-      - name: Build TPK
+      - name: Build TPKs
         run: |
           dotnet msbuild TizenAmbilight/TizenAmbilight.csproj -restore -t:Rebuild -p:Configuration=Release -v:m
+          dotnet msbuild TizenAmbilight.Settings/TizenAmbilight.Settings.csproj -restore -t:Rebuild -p:Configuration=Release -v:m
           mkdir dist
           cp TizenAmbilight/bin/Release/tizen90/*.tpk "dist/TizenAmbilight-${GITHUB_REF_NAME}-default-cert.tpk"
+          cp TizenAmbilight.Settings/bin/Release/tizen90/*.tpk "dist/TizenAmbilightSettings-${GITHUB_REF_NAME}-default-cert.tpk"
           (cd dist && sha256sum *.tpk > SHA256SUMS)
       - name: Publish release
         env:
