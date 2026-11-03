@@ -241,8 +241,9 @@ app list also starts the service. If the strip stays dark after a cold boot, see
 
 ## Configuration
 
-Settings live in `config.json`, which is bundled into the app when it is built or installed. The
-essentials:
+Settings start from `config.json`, which is bundled into the app when it is built or installed. After
+installing, the most important ones can be changed on the TV with the
+[Ambilight Settings app](#settings-on-the-tv). The essentials:
 
 ```json
 {
@@ -262,14 +263,79 @@ reinstalling.
 
 ### Settings on the TV
 
-From build v8 there is an optional second package, **Ambilight Settings**: an app in the TV's app list
-that looks and works like the TV's own settings menu. Install it next to the service, signed with the
-same certificate. Use it to set the WLED IP address, the number of LEDs, the
-LEDs per screen edge, where the strip starts and which way it runs, plus brightness, colour and
-smoothing. An edge colour test helps line the strip up. Every change is saved at once, applied within
-about a second, and kept across restarts and updates. Values set there take precedence over
-`config.json`; **Reset Settings** returns to it. Details:
+From build v8 there is an optional second app, **Ambilight Settings**. It changes the most important
+settings from the sofa with the TV remote, so you no longer need to rebuild or reinstall to fix an IP
+address or line up the strip. It looks and works like the TV's own settings menu: categories on the
+left, settings on the right, and a short explanation of the selected setting at the bottom.
+
+**Installing it.** It is a separate package (`dev.ritwickverma.AmbilightSettings`), installed next to
+the TizenAmbilight service:
+
+* Apps2Samsung: install **TizenAmbilight Settings** from the catalog after **TizenAmbilight**.
+* From source: build `TizenAmbilight.Settings/TizenAmbilight.Settings.csproj` as well (see
+  [Option 2](#option-2-build-from-source-and-sign-it-yourself)).
+
+Sign both packages with the **same certificate**. The two apps share their files through a folder that
+Tizen opens only to packages from the same author, so with different certificates the app cannot
+reach the service. The two are kept in separate packages on purpose: on the S95B, updating one
+package that contains both apps stopped the service from starting.
+
+**Opening it.** Open **Ambilight Settings** from the TV's app list. Opening it also starts the
+service if it is not running yet.
+
+**Using the remote.**
+
+| key | in the menu | in a value popup |
+|---|---|---|
+| Up / Down | move between settings | larger step (sliders), next/previous value (lists, IP address part) |
+| Left / Right | Left goes back to the categories; Right opens a slider | small step (sliders), previous/next IP address part |
+| 0-9 | | type a number or an IP address part |
+| OK | change the selected setting | confirm |
+| Back | back to the categories, or close the app | close the popup |
+
+**What you can set.**
+
+| category | setting | what it does |
+|---|---|---|
+| General | Ambilight | turn the strip on or off; when off, WLED returns to its own lighting after a second |
+| | Status | what the service is doing: running and how many updates per second it sends, TV screen off, LEDs off, cannot reach WLED, or why the service failed to start |
+| | Picture Source | Video (recommended), Hardware Sampler (older TVs such as the S95B) or Screenshot (legacy) |
+| LED Strip | WLED IP Address | address of your WLED controller |
+| | Number of LEDs | LEDs on the strip (up to 490); Auto uses the edge counts below |
+| | WLED Port | WLED's UDP realtime port, normally 21324 |
+| LED Layout | Edge Colour Test | shows top = red, right = green, bottom = blue, left = yellow while the page is open |
+| | Top / Right / Bottom / Left LEDs | LEDs along each edge, for example to leave a gap for the stand; Auto spreads them by screen shape |
+| | Start Position | moves the picture along the strip until it lines up |
+| | Direction | Normal or Reversed, if the colours run the wrong way round |
+| | Layout | read-only summary of the zones per edge |
+| Picture | Auto Brightness | follows the scene's brightness; turn off to use Gamma |
+| | Gamma | brightness curve when Auto Brightness is off (lower is brighter in dark scenes) |
+| | Colour | colour intensity; 1.00 matches the picture |
+| | Response Speed | how quickly the LEDs follow the picture; lower is smoother |
+| | HDR Picture | keep on unless colours look washed out |
+| | Dim Paused Picture | dims the LEDs after the picture has been still this long (Off, or up to 120 s) |
+| | Ignore Black Bars | takes the edge colours from the picture, not the bars beside 4:3 content |
+| | Update Rate | updates per second (Unlimited, or up to 60) |
+| Support | Sampler Points | spots the hardware sampler measures round the screen (4-73) |
+| | Reset Settings | forget every change made here and return to the installed values |
+| | About | version information |
+
+**Lining up the strip.** Open **LED Layout** and turn on **Edge Colour Test** (it needs only the WLED
+IP address). Set the four edge counts to the LEDs actually on each side. Then change **Start
+Position** until red starts at the top-left corner, and **Direction** if the colours run the wrong way.
+The test stops when you leave the page or close the app.
+
+**Saving.** Every change is saved at once, and sliders save while you move them, so you can judge the
+strip live. The service applies a change within about a second, without a restart, and the values
+survive restarts, TV power cycles and updates of either app. Values set here take precedence over
+`config.json`; **Reset Settings** returns to it. Settings the app does not show (white balance, black
+level, ...) still come from `config.json`. Full reference:
 [docs/configuration.md](docs/configuration.md#settings-app-on-the-tv).
+
+**If something is wrong.** **General > Status** shows the service's state. *"Connecting to the
+Ambilight service..."* for a few seconds after opening is normal. *"The Ambilight service is not
+running"* or *"failed to start"* means the service did not come up: try **Reset Settings**, then turn
+the TV off and on. *"Cannot reach WLED"* points at the IP address, the port or the network.
 
 ## Updating safely
 
